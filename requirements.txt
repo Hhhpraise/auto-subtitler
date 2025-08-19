@@ -1,0 +1,9 @@
+torch==2.0.1
+whisper==20230314
+moviepy==1.0.3
+SpeechRecognition==3.10.0
+googletrans==4.0.0rc1
+requests==2.31.0
+opencv-python==4.8.0.74
+Pillow==10.0.0
+numpy==1.24.3

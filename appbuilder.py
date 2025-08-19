@@ -1,8 +1,35 @@
-# build_app.py - Script to create standalone executable
+# build_app.py - Enhanced script to create standalone executable, installer, and deploy to GitHub
 
 import subprocess
 import sys
 import os
+import shutil
+import json
+import tempfile
+from pathlib import Path
+
+
+def check_dependencies():
+    """Check if all required dependencies are installed"""
+    required_packages = [
+        'torch', 'whisper', 'moviepy', 'speech_recognition',
+        'googletrans', 'requests', 'opencv-python'
+    ]
+
+    missing_packages = []
+    for package in required_packages:
+        try:
+            __import__(package)
+        except ImportError:
+            missing_packages.append(package)
+
+    if missing_packages:
+        print(f"❌ Missing packages: {', '.join(missing_packages)}")
+        print("Installing missing packages...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing_packages)
+        print("✅ Missing packages installed")
+    else:
+        print("✅ All dependencies are installed")
 
 
 def install_pyinstaller():
@@ -15,6 +42,24 @@ def install_pyinstaller():
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
 
+def install_innosetup():
+    """Check if Inno Setup is available or provide download instructions"""
+    try:
+        # Check if ISCC is available in PATH
+        result = subprocess.run(["ISCC", "/?"], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("✅ Inno Setup is installed")
+            return True
+    except FileNotFoundError:
+        pass
+
+    print("❌ Inno Setup not found")
+    print("📥 Please download and install Inno Setup from:")
+    print("   https://jrsoftware.org/isdl.php")
+    print("   After installation, make sure to add it to your PATH")
+    return False
+
+
 def create_spec_file():
     """Create a custom spec file for better control"""
     spec_content = """
@@ -23,7 +68,7 @@ def create_spec_file():
 block_cipher = None
 
 a = Analysis(
-    ['subtitler_gui.py'],  # Your main Python file
+    ['subtitler_gui.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -31,32 +76,18 @@ a = Analysis(
         # ('path/to/data', 'destination/in/app'),
     ],
     hiddenimports=[
-        'torch',
-        'whisper',
-        'moviepy.editor',
-        'speech_recognition',
-        'googletrans',
-        'tkinter',
-        'queue',
-        'threading',
-        'hashlib',
-        'json',
-        'requests',
-        'urllib.request',
-        'subprocess',
-        'webbrowser',
-        'wave'
+        'torch', 'whisper', 'moviepy.editor', 'speech_recognition', 
+        'googletrans', 'tkinter', 'queue', 'threading', 'hashlib', 
+        'json', 'requests', 'urllib.request', 'subprocess', 'webbrowser', 
+        'wave', 'numpy', 'cv2', 'PIL', 'pydub'
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         # Exclude unused modules to reduce size
-        'matplotlib',
-        'numpy.random._examples',
-        'test',
-        'unittest',
-        'doctest',
+        'matplotlib', 'numpy.random._examples', 'test', 'unittest', 
+        'doctest', 'pandas', 'scipy', 'sklearn', 'tensorflow', 'keras'
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -73,24 +104,24 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='AutoSubtitler',  # Name of your executable
+    name='AutoSubtitler',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,  # Compress executable (optional)
+    upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # Set to True if you want console window
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='icon.ico'  # Add your icon file here (optional)
+    icon='icon.ico'  # Optional: add an icon file
 )
 """
 
-    with open('../transcriper/AutoSubtitler.spec', 'w') as f:
+    with open('AutoSubtitler.spec', 'w') as f:
         f.write(spec_content)
     print("✅ Spec file created: AutoSubtitler.spec")
 
@@ -102,7 +133,7 @@ def build_executable():
     # Build using spec file
     cmd = [
         "pyinstaller",
-        "--clean",  # Clean cache
+        "--clean",
         "AutoSubtitler.spec"
     ]
 
@@ -110,65 +141,311 @@ def build_executable():
         subprocess.run(cmd, check=True)
         print("✅ Build completed!")
         print("📁 Executable location: dist/AutoSubtitler.exe")
-        print("💡 You can now distribute the 'dist' folder")
+        return True
     except subprocess.CalledProcessError as e:
         print(f"❌ Build failed: {e}")
+        return False
 
 
 def build_onefile():
-    """Alternative: Build as single file (slower startup but portable)"""
+    """Build as single file (slower startup but portable)"""
     print("🔨 Building single-file executable...")
 
     cmd = [
         "pyinstaller",
         "--onefile",
-        "--windowed",  # No console window
+        "--windowed",
         "--name=AutoSubtitler",
+        "--icon=icon.ico",  # Optional: add an icon
         "--clean",
-        "subtitler_gui.py"  # Your main file
+        "subtitler_gui.py"
     ]
 
     try:
         subprocess.run(cmd, check=True)
         print("✅ Single-file build completed!")
         print("📁 Executable: dist/AutoSubtitler.exe")
+        return True
     except subprocess.CalledProcessError as e:
         print(f"❌ Build failed: {e}")
+        return False
 
 
-if __name__ == "__main__":
-    print("🎬 Auto Subtitler - Build Script")
-    print("=" * 40)
+def create_installer():
+    """Create an installer using Inno Setup"""
+    if not install_innosetup():
+        return False
+
+    # Create the Inno Setup script
+    iss_content = """
+; Script generated by the Auto Subtitler Build Script
+; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
+
+#define MyAppName "Auto Subtitler"
+#define MyAppVersion "2.0"
+#define MyAppPublisher "Your Name"
+#define MyAppURL "https://github.com/yourusername/auto-subtitler"
+#define MyAppExeName "AutoSubtitler.exe"
+
+[Setup]
+; NOTE: The value of AppId uniquely identifies this application.
+; Do not use the same AppId value in installers for other applications.
+; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
+AppId={{{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
+DefaultDirName={{autopf}}\{#MyAppName}
+DisableProgramGroupPage=yes
+; Remove the following line to run in administrative install mode (install for all users.)
+PrivilegesRequired=lowest
+OutputDir=installer
+OutputBaseFilename=AutoSubtitler_Setup
+Compression=lzma
+SolidCompression=yes
+WizardStyle=modern
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+Source: "dist\AutoSubtitler.exe"; DestDir: "{app}"; Flags: ignoreversion
+; NOTE: Don't use "Flags: ignoreversion" on any shared system files
+
+[Icons]
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+"""
+
+    with open("installer.iss", "w") as f:
+        f.write(iss_content)
+
+    print("📝 Created Inno Setup script: installer.iss")
+
+    # Compile the installer
+    try:
+        subprocess.run(["ISCC", "installer.iss"], check=True)
+        print("✅ Installer created successfully!")
+        print("📁 Installer location: installer/AutoSubtitler_Setup.exe")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Installer compilation failed: {e}")
+        return False
+
+
+def prepare_github_release():
+    """Prepare files for GitHub release"""
+    print("📦 Preparing files for GitHub release...")
+
+    # Create a release directory
+    release_dir = "github_release"
+    if os.path.exists(release_dir):
+        shutil.rmtree(release_dir)
+    os.makedirs(release_dir)
+
+    # Copy the executable
+    if os.path.exists("dist/AutoSubtitler.exe"):
+        shutil.copy2("dist/AutoSubtitler.exe", release_dir)
+
+    # Copy the installer if it exists
+    if os.path.exists("installer/AutoSubtitler_Setup.exe"):
+        shutil.copy2("installer/AutoSubtitler_Setup.exe", release_dir)
+
+    # Create a README for the release
+    readme_content = """
+# Auto Subtitler v2.0
+
+A GPU-accelerated video subtitle generator with smart caching and speed optimizations.
+
+## Features
+
+- Fast audio extraction and transcription
+- Multiple language support
+- Real-time processing simulation
+- Smart caching for faster re-processing
+- GPU acceleration support
+
+## System Requirements
+
+- Windows 10 or later
+- 4GB RAM minimum (8GB recommended)
+- NVIDIA GPU with CUDA support (optional but recommended)
+
+## Installation
+
+1. Download the installer (`AutoSubtitler_Setup.exe`)
+2. Run the installer and follow the instructions
+3. Launch Auto Subtitler from the Start menu or desktop shortcut
+
+## Portable Version
+
+If you prefer a portable version, download `AutoSubtitler.exe` and run it directly.
+
+## Notes
+
+- The first run may take longer as it downloads AI models
+- Internet connection is required for translation features
+- For best performance, use a GPU with CUDA support
+
+## Troubleshooting
+
+If you encounter issues:
+1. Make sure you have the latest Windows updates
+2. Install the latest NVIDIA drivers if using a GPU
+3. Check that your antivirus isn't blocking the application
+"""
+
+    with open(os.path.join(release_dir, "README.md"), "w") as f:
+        f.write(readme_content)
+
+    print("✅ GitHub release files prepared in 'github_release' directory")
+    return release_dir
+
+
+def create_github_release_script():
+    """Create a script to help with GitHub releases"""
+    script_content = """#!/bin/bash
+# Script to create a GitHub release and upload assets
+
+# Set variables
+VERSION="2.0"
+RELEASE_DIR="github_release"
+RELEASE_NAME="Auto Subtitler v$VERSION"
+RELEASE_NOTES="Latest release of Auto Subtitler with performance improvements and bug fixes."
+
+# Create a new release
+echo "Creating GitHub release..."
+gh release create "v$VERSION" --title "$RELEASE_NAME" --notes "$RELEASE_NOTES"
+
+# Upload assets
+echo "Uploading assets..."
+gh release upload "v$VERSION" "$RELEASE_DIR/AutoSubtitler_Setup.exe#Installer"
+gh release upload "v$VERSION" "$RELEASE_DIR/AutoSubtitler.exe#Portable Version"
+gh release upload "v$VERSION" "$RELEASE_DIR/README.md#Release Notes"
+
+echo "Release created successfully!"
+"""
+
+    with open("create_github_release.sh", "w") as f:
+        f.write(script_content)
+
+    # Also create a batch file for Windows users
+    batch_content = """@echo off
+REM Script to create a GitHub release and upload assets (Windows version)
+
+REM Set variables
+set VERSION=2.0
+set RELEASE_DIR=github_release
+set RELEASE_NAME=Auto Subtitler v%VERSION%
+set RELEASE_NOTES=Latest release of Auto Subtitler with performance improvements and bug fixes.
+
+REM Create a new release
+echo Creating GitHub release...
+gh release create "v%VERSION%" --title "%RELEASE_NAME%" --notes "%RELEASE_NOTES%"
+
+REM Upload assets
+echo Uploading assets...
+gh release upload "v%VERSION%" "%RELEASE_DIR%/AutoSubtitler_Setup.exe#Installer"
+gh release upload "v%VERSION%" "%RELEASE_DIR%/AutoSubtitler.exe#Portable Version"
+gh release upload "v%VERSION%" "%RELEASE_DIR%/README.md#Release Notes"
+
+echo Release created successfully!
+pause
+"""
+
+    with open("create_github_release.bat", "w") as f:
+        f.write(batch_content)
+
+    print("✅ GitHub release scripts created")
+    print("   - create_github_release.sh (for Linux/Mac)")
+    print("   - create_github_release.bat (for Windows)")
+    print("💡 Note: You need to install GitHub CLI (gh) and be authenticated")
+
+
+def main():
+    print("🎬 Auto Subtitler - Enhanced Build Script")
+    print("=" * 50)
+
+    # Check dependencies
+    check_dependencies()
 
     # Install PyInstaller
     install_pyinstaller()
 
-    choice = input(
-        "\nChoose build type:\n1. Directory build (faster startup)\n2. Single file (more portable)\n3. Custom spec file\nEnter choice (1-3): ")
+    while True:
+        print("\nChoose an option:")
+        print("1. Directory build (faster startup)")
+        print("2. Single file build (more portable)")
+        print("3. Custom spec file build")
+        print("4. Create installer (requires Inno Setup)")
+        print("5. Prepare GitHub release files")
+        print("6. Create GitHub release scripts")
+        print("7. Full build process (executable + installer + GitHub prep)")
+        print("8. Exit")
 
-    if choice == "1":
-        # Quick directory build
-        cmd = [
-            "pyinstaller",
-            "--windowed",
-            "--name=AutoSubtitler",
-            "--clean",
-            "subtitler_gui.py"
-        ]
-        subprocess.run(cmd)
+        choice = input("Enter your choice (1-8): ").strip()
 
-    elif choice == "2":
-        build_onefile()
+        if choice == "1":
+            # Quick directory build
+            cmd = [
+                "pyinstaller",
+                "--windowed",
+                "--name=AutoSubtitler",
+                "--clean",
+                "subtitler_gui.py"
+            ]
+            subprocess.run(cmd)
 
-    elif choice == "3":
-        create_spec_file()
-        build_executable()
+        elif choice == "2":
+            build_onefile()
 
-    else:
-        print("Invalid choice")
+        elif choice == "3":
+            create_spec_file()
+            build_executable()
+
+        elif choice == "4":
+            if build_executable():
+                create_installer()
+
+        elif choice == "5":
+            if os.path.exists("dist/AutoSubtitler.exe"):
+                prepare_github_release()
+            else:
+                print("❌ Please build the executable first")
+
+        elif choice == "6":
+            create_github_release_script()
+
+        elif choice == "7":
+            # Full build process
+            if build_executable() and create_installer():
+                prepare_github_release()
+                create_github_release_script()
+
+        elif choice == "8":
+            print("👋 Goodbye!")
+            break
+
+        else:
+            print("❌ Invalid choice. Please try again.")
 
     print("\n🎉 Build process completed!")
     print("💡 Tips:")
     print("   - Test the executable before distributing")
-    print("   - Include any required DLL files if needed")
-    print("   - Consider antivirus false positives with single-file builds")
+    print("   - For GitHub releases, install GitHub CLI (gh)")
+    print("   - Sign up for a GitHub account if you don't have one")
+    print("   - Consider code signing for better trust with users")
+
+
+if __name__ == "__main__":
+    main()

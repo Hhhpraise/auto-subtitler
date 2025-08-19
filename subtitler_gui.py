@@ -116,7 +116,6 @@ class FastWhisperProcessor:
                 device=self.device
             )
 
-
         return self.model
 
     def transcribe_optimized(self, audio_path, language_hint=None,
@@ -131,24 +130,58 @@ class FastWhisperProcessor:
             'language': language_hint,
             'task': 'transcribe',
             'verbose': False,
-            'beam_size': 1,  # Faster than default beam search
-            'best_of': 1,  # Don't generate multiple candidates
-            'temperature': 0,  # Deterministic output
-            'compression_ratio_threshold': 2.4,
-            'logprob_threshold': -1.0,
-            'no_speech_threshold': 0.6,
-            'condition_on_previous_text': False  # Faster processing
+            'beam_size': 5,  # Increased to reduce repetitions
+            'best_of': 5,  # Increased to reduce repetitions
+            'temperature': 0.2,  # Slight randomness to avoid repetitions
+            'compression_ratio_threshold': 1.8,  # Stricter to filter out bad transcripts
+            'logprob_threshold': -0.8,  # Stricter to filter out bad transcripts
+            'no_speech_threshold': 0.5,  # Slightly lower to detect more speech
+            'condition_on_previous_text': True,  # Helps with context
+            'suppress_tokens': [-1],  # Suppress common repetition tokens
+            'repetition_penalty': 1.2  # Penalize repetitions
         }
 
         # Try fast transcription first
         try:
             result = model.transcribe(audio_path, **options)
+            # Post-process to remove any remaining repetitions
+            result = self._post_process_transcription(result)
             return result
 
         except Exception as e:
             print(f"Fast transcription failed: {e}")
             # Fallback to default settings
             return model.transcribe(audio_path, fp16=self.device == "cuda")
+
+    def _post_process_transcription(self, result):
+        """Post-process transcription to remove repetitions"""
+        if 'segments' not in result:
+            return result
+
+        for segment in result['segments']:
+            if 'text' in segment:
+                # Remove common repetition patterns
+                text = segment['text']
+                # Simple heuristic: if a word is repeated more than 3 times consecutively
+                words = text.split()
+                new_words = []
+                prev_word = None
+                repeat_count = 0
+
+                for word in words:
+                    if word == prev_word:
+                        repeat_count += 1
+                    else:
+                        repeat_count = 0
+
+                    if repeat_count < 2:  # Allow up to 2 repetitions
+                        new_words.append(word)
+
+                    prev_word = word
+
+                segment['text'] = ' '.join(new_words)
+
+        return result
 
 
 class VideoPreprocessor:
@@ -247,8 +280,9 @@ class SubtitlerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("🎬 Auto Subtitler - GPU Accelerated v2.0 (Optimized)")
-        self.root.geometry("1000x750")
+        self.root.geometry("950x700")  # Slightly smaller window
         self.root.configure(bg='#2b2b2b')
+        self.root.minsize(900, 650)  # Minimum size to ensure UI elements fit
 
         # Variables
         self.video_path = tk.StringVar()
@@ -400,28 +434,31 @@ class SubtitlerGUI:
 
         # Title
         title_frame = tk.Frame(self.root, bg='#2b2b2b')
-        title_frame.pack(fill='x', pady=10)
+        title_frame.pack(fill='x', pady=(8, 5))  # Reduced padding
 
-        title_label = tk.Label(title_frame, text="🎬 Auto Subtitler v2.0 (Optimized)",
-                               font=('Arial', 24, 'bold'), fg='#4CAF50', bg='#2b2b2b')
+        title_label = tk.Label(title_frame, text="🎬 Auto Subtitler v2.0 ",
+                               font=('Arial', 18, 'bold'), fg='#4CAF50', bg='#2b2b2b')  # Smaller font
         title_label.pack()
 
         subtitle_label = tk.Label(title_frame,
                                   text="AI-Powered Video Subtitle Generation with Smart Caching & Speed Optimizations",
-                                  font=('Arial', 12), fg='#888', bg='#2b2b2b')
+                                  font=('Arial', 10), fg='#888', bg='#2b2b2b')  # Smaller font
         subtitle_label.pack()
 
-        # Main container
-        main_frame = tk.Frame(self.root, bg='#2b2b2b')
-        main_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        # Main container with paned window for better resizing
+        main_paned = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg='#2b2b2b', sashwidth=4, sashrelief=tk.RAISED)
+        main_paned.pack(fill='both', expand=True, padx=10, pady=5)
 
         # Left panel for settings
-        left_panel = tk.Frame(main_frame, bg='#3b3b3b', relief='raised', bd=2)
-        left_panel.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        left_panel = tk.Frame(main_paned, bg='#3b3b3b', relief='raised', bd=1)  # Thinner border
+        left_panel.pack_propagate(False)  # Prevent shrinking
 
         # Right panel for output
-        right_panel = tk.Frame(main_frame, bg='#3b3b3b', relief='raised', bd=2)
-        right_panel.pack(side='right', fill='both', expand=True, padx=(10, 0))
+        right_panel = tk.Frame(main_paned, bg='#3b3b3b', relief='raised', bd=1)  # Thinner border
+        right_panel.pack_propagate(False)  # Prevent shrinking
+
+        main_paned.add(left_panel, width=450)  # Fixed width
+        main_paned.add(right_panel, minsize=400)  # Minimum size
 
         self.setup_left_panel(left_panel)
         self.setup_right_panel(right_panel)
@@ -429,92 +466,110 @@ class SubtitlerGUI:
     def setup_left_panel(self, parent):
         """Setup the left panel with all controls"""
 
+        # Create a canvas and scrollbar for the left panel
+        canvas = tk.Canvas(parent, bg='#3b3b3b', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg='#3b3b3b')
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Pack the canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
         # Settings title
-        settings_label = tk.Label(parent, text="⚙️ Configuration",
-                                  font=('Arial', 16, 'bold'), fg='#4CAF50', bg='#3b3b3b')
-        settings_label.pack(pady=10)
+        settings_label = tk.Label(scrollable_frame, text="⚙️ Configuration",
+                                  font=('Arial', 14, 'bold'), fg='#4CAF50', bg='#3b3b3b')  # Smaller font
+        settings_label.pack(pady=(10, 8))
 
         # System status frame
-        status_frame = tk.LabelFrame(parent, text="🔧 System Status",
-                                     fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        status_frame.pack(fill='x', padx=10, pady=5)
+        status_frame = tk.LabelFrame(scrollable_frame, text="🔧 System Status",
+                                     fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        status_frame.pack(fill='x', padx=8, pady=4)
 
         # Internet connection status
         self.connection_status = tk.Label(status_frame, text="🌐 Checking connection...",
-                                          fg='#FFC107', bg='#3b3b3b', font=('Arial', 10))
+                                          fg='#FFC107', bg='#3b3b3b', font=('Arial', 9))  # Smaller font
         self.connection_status.pack(anchor='w', padx=5, pady=2)
 
         # Internet check button
         check_internet_btn = tk.Button(status_frame, text="🔄 Check Internet",
                                        command=self.manual_internet_check, bg='#2196F3', fg='white',
-                                       font=('Arial', 9, 'bold'), cursor='hand2')
+                                       font=('Arial', 8, 'bold'), cursor='hand2')  # Smaller font
         check_internet_btn.pack(anchor='w', padx=5, pady=2)
 
         # Cache status
         cache_info = self.get_cache_info()
         self.cache_status = tk.Label(status_frame, text=f"💾 Cache: {cache_info}",
-                                     fg='#888', bg='#3b3b3b', font=('Arial', 10))
+                                     fg='#888', bg='#3b3b3b', font=('Arial', 9))  # Smaller font
         self.cache_status.pack(anchor='w', padx=5, pady=2)
 
         # Clear cache button
         clear_cache_btn = tk.Button(status_frame, text="🗑️ Clear Cache",
                                     command=self.clear_cache, bg='#FF5722', fg='white',
-                                    font=('Arial', 9, 'bold'), cursor='hand2')
+                                    font=('Arial', 8, 'bold'), cursor='hand2')  # Smaller font
         clear_cache_btn.pack(anchor='w', padx=5, pady=2)
 
         # Video selection
-        video_frame = tk.LabelFrame(parent, text="📁 Video File",
-                                    fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        video_frame.pack(fill='x', padx=10, pady=5)
+        video_frame = tk.LabelFrame(scrollable_frame, text="📁 Video File",
+                                    fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        video_frame.pack(fill='x', padx=8, pady=4)
 
         video_entry_frame = tk.Frame(video_frame, bg='#3b3b3b')
-        video_entry_frame.pack(fill='x', padx=5, pady=5)
+        video_entry_frame.pack(fill='x', padx=5, pady=4)  # Reduced padding
 
         self.video_entry = tk.Entry(video_entry_frame, textvariable=self.video_path,
-                                    bg='#555', fg='white', font=('Arial', 10), width=40)
+                                    bg='#555', fg='white', font=('Arial', 9), width=35)  # Smaller font
         self.video_entry.pack(side='left', fill='x', expand=True)
         self.video_entry.bind('<KeyRelease>', self.on_video_path_change)
 
         video_browse_btn = tk.Button(video_entry_frame, text="Browse",
                                      command=self.browse_video, bg='#4CAF50', fg='white',
-                                     font=('Arial', 10, 'bold'), cursor='hand2')
+                                     font=('Arial', 9, 'bold'), cursor='hand2')  # Smaller font
         video_browse_btn.pack(side='right', padx=(5, 0))
 
         # Cache status for current video
         self.video_cache_status = tk.Label(video_frame, text="",
-                                           fg='#888', bg='#3b3b3b', font=('Arial', 9))
+                                           fg='#888', bg='#3b3b3b', font=('Arial', 8))  # Smaller font
         self.video_cache_status.pack(anchor='w', padx=5, pady=2)
 
         # Output path
-        output_frame = tk.LabelFrame(parent, text="💾 Output Location",
-                                     fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        output_frame.pack(fill='x', padx=10, pady=5)
+        output_frame = tk.LabelFrame(scrollable_frame, text="💾 Output Location",
+                                     fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        output_frame.pack(fill='x', padx=8, pady=4)
 
         output_entry_frame = tk.Frame(output_frame, bg='#3b3b3b')
-        output_entry_frame.pack(fill='x', padx=5, pady=5)
+        output_entry_frame.pack(fill='x', padx=5, pady=4)  # Reduced padding
 
         self.output_entry = tk.Entry(output_entry_frame, textvariable=self.output_path,
-                                     bg='#555', fg='white', font=('Arial', 10), width=40)
+                                     bg='#555', fg='white', font=('Arial', 9), width=35)  # Smaller font
         self.output_entry.pack(side='left', fill='x', expand=True)
 
         output_browse_btn = tk.Button(output_entry_frame, text="Browse",
                                       command=self.browse_output, bg='#4CAF50', fg='white',
-                                      font=('Arial', 10, 'bold'), cursor='hand2')
+                                      font=('Arial', 9, 'bold'), cursor='hand2')  # Smaller font
         output_browse_btn.pack(side='right', padx=(5, 0))
 
         # Language settings
-        lang_frame = tk.LabelFrame(parent, text="🌐 Language Settings",
-                                   fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        lang_frame.pack(fill='x', padx=10, pady=5)
+        lang_frame = tk.LabelFrame(scrollable_frame, text="🌐 Language Settings",
+                                   fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        lang_frame.pack(fill='x', padx=8, pady=4)
 
         # Auto-translate checkbox
         auto_translate_check = tk.Checkbutton(lang_frame, text="Auto-translate to target language",
                                               variable=self.auto_translate, fg='white', bg='#3b3b3b',
-                                              selectcolor='#555', font=('Arial', 10))
+                                              selectcolor='#555', font=('Arial', 9))  # Smaller font
         auto_translate_check.pack(anchor='w', padx=5, pady=2)
 
         # Target language
-        lang_label = tk.Label(lang_frame, text="Target Language:", fg='white', bg='#3b3b3b')
+        lang_label = tk.Label(lang_frame, text="Target Language:", fg='white', bg='#3b3b3b',
+                              font=('Arial', 9))  # Smaller font
         lang_label.pack(anchor='w', padx=5)
 
         languages = {
@@ -526,7 +581,7 @@ class SubtitlerGUI:
         }
 
         lang_combo = ttk.Combobox(lang_frame, textvariable=self.target_language,
-                                  values=list(languages.keys()), width=25)
+                                  values=list(languages.keys()), width=22, font=('Arial', 9))  # Smaller font
         lang_combo.pack(padx=5, pady=2)
         lang_combo.set('English')
 
@@ -537,18 +592,18 @@ class SubtitlerGUI:
         # Test translation button
         test_translate_btn = tk.Button(lang_frame, text="🧪 Test Translation",
                                        command=self.test_translation, bg='#9C27B0', fg='white',
-                                       font=('Arial', 9, 'bold'), cursor='hand2')
+                                       font=('Arial', 8, 'bold'), cursor='hand2')  # Smaller font
         test_translate_btn.pack(padx=5, pady=2)
 
         # AI Model settings
-        model_frame = tk.LabelFrame(parent, text="🤖 AI Model Settings",
-                                    fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        model_frame.pack(fill='x', padx=10, pady=5)
+        model_frame = tk.LabelFrame(scrollable_frame, text="🤖 AI Model Settings",
+                                    fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        model_frame.pack(fill='x', padx=8, pady=4)
 
         # GPU checkbox
         gpu_check = tk.Checkbutton(model_frame, text=f"Use GPU Acceleration ({self.gpu_info})",
                                    variable=self.use_gpu, fg='white', bg='#3b3b3b',
-                                   selectcolor='#555', font=('Arial', 10),
+                                   selectcolor='#555', font=('Arial', 9),  # Smaller font
                                    state='normal' if self.gpu_available else 'disabled')
         gpu_check.pack(anchor='w', padx=5, pady=2)
 
@@ -558,15 +613,17 @@ class SubtitlerGUI:
         # Cache checkbox
         cache_check = tk.Checkbutton(model_frame, text="Use smart caching (faster re-processing)",
                                      variable=self.use_cache, fg='white', bg='#3b3b3b',
-                                     selectcolor='#555', font=('Arial', 10))
+                                     selectcolor='#555', font=('Arial', 9))  # Smaller font
         cache_check.pack(anchor='w', padx=5, pady=2)
 
         # Model size
-        model_label = tk.Label(model_frame, text="Model Size:", fg='white', bg='#3b3b3b')
+        model_label = tk.Label(model_frame, text="Model Size:", fg='white', bg='#3b3b3b',
+                               font=('Arial', 9))  # Smaller font
         model_label.pack(anchor='w', padx=5)
 
         model_combo = ttk.Combobox(model_frame, textvariable=self.model_size,
-                                   values=['tiny', 'base', 'small', 'medium', 'large'], width=25)
+                                   values=['tiny', 'base', 'small', 'medium', 'large'], width=22,
+                                   font=('Arial', 9))  # Smaller font
         model_combo.pack(padx=5, pady=2)
         model_combo.set('base')
         model_combo.bind('<<ComboboxSelected>>', self.on_model_change)
@@ -581,19 +638,21 @@ class SubtitlerGUI:
         }
 
         self.model_info_label = tk.Label(model_frame, text=model_info.get('base', ''),
-                                         fg='#888', bg='#3b3b3b', font=('Arial', 8))
+                                         fg='#888', bg='#3b3b3b', font=('Arial', 8))  # Smaller font
         self.model_info_label.pack(anchor='w', padx=5)
 
         # Optimization mode
-        optimization_frame = tk.LabelFrame(parent, text="⚡ Optimization Mode",
-                                           fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        optimization_frame.pack(fill='x', padx=10, pady=5)
+        optimization_frame = tk.LabelFrame(scrollable_frame, text="⚡ Optimization Mode",
+                                           fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        optimization_frame.pack(fill='x', padx=8, pady=4)
 
-        optimization_label = tk.Label(optimization_frame, text="Speed vs Quality:", fg='white', bg='#3b3b3b')
+        optimization_label = tk.Label(optimization_frame, text="Speed vs Quality:", fg='white', bg='#3b3b3b',
+                                      font=('Arial', 9))  # Smaller font
         optimization_label.pack(anchor='w', padx=5)
 
         optimization_combo = ttk.Combobox(optimization_frame, textvariable=self.optimization_mode,
-                                          values=['ultra_fast', 'balanced', 'high_quality'], width=25)
+                                          values=['ultra_fast', 'balanced', 'high_quality'], width=22,
+                                          font=('Arial', 9))  # Smaller font
         optimization_combo.pack(padx=5, pady=2)
         optimization_combo.set('balanced')
 
@@ -605,106 +664,110 @@ class SubtitlerGUI:
         }
 
         self.optimization_info_label = tk.Label(optimization_frame, text=optimization_info.get('balanced', ''),
-                                                fg='#888', bg='#3b3b3b', font=('Arial', 8))
+                                                fg='#888', bg='#3b3b3b', font=('Arial', 8))  # Smaller font
         self.optimization_info_label.pack(anchor='w', padx=5)
 
         # Processing mode
-        mode_frame = tk.LabelFrame(parent, text="🎬 Processing Mode",
-                                   fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        mode_frame.pack(fill='x', padx=10, pady=5)
+        mode_frame = tk.LabelFrame(scrollable_frame, text="🎬 Processing Mode",
+                                   fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        mode_frame.pack(fill='x', padx=8, pady=4)
 
         complete_radio = tk.Radiobutton(mode_frame, text="Complete Processing (Better Quality)",
                                         variable=self.processing_mode, value='complete',
-                                        fg='white', bg='#3b3b3b', selectcolor='#555')
+                                        fg='white', bg='#3b3b3b', selectcolor='#555', font=('Arial', 9))  # Smaller font
         complete_radio.pack(anchor='w', padx=5, pady=2)
 
         realtime_radio = tk.Radiobutton(mode_frame, text="Real-time Processing (Watch & Process)",
                                         variable=self.processing_mode, value='realtime',
-                                        fg='white', bg='#3b3b3b', selectcolor='#555')
+                                        fg='white', bg='#3b3b3b', selectcolor='#555', font=('Arial', 9))  # Smaller font
         realtime_radio.pack(anchor='w', padx=5, pady=2)
 
         # Action buttons
-        button_frame = tk.Frame(parent, bg='#3b3b3b')
-        button_frame.pack(fill='x', padx=10, pady=15)
+        button_frame = tk.Frame(scrollable_frame, bg='#3b3b3b')
+        button_frame.pack(fill='x', padx=8, pady=12)  # Reduced padding
 
         self.start_btn = tk.Button(button_frame, text="🚀 Start Processing",
                                    command=self.start_processing, bg='#4CAF50', fg='white',
-                                   font=('Arial', 14, 'bold'), cursor='hand2', height=2)
+                                   font=('Arial', 12, 'bold'), cursor='hand2', height=1)  # Smaller height
         self.start_btn.pack(fill='x', pady=2)
 
         self.stop_btn = tk.Button(button_frame, text="⏹️ Stop Processing",
                                   command=self.stop_processing, bg='#f44336', fg='white',
-                                  font=('Arial', 12, 'bold'), cursor='hand2', state='disabled')
+                                  font=('Arial', 10, 'bold'), cursor='hand2', state='disabled')  # Smaller font
         self.stop_btn.pack(fill='x', pady=2)
 
         self.watch_btn = tk.Button(button_frame, text="🎥 Watch Video",
                                    command=self.watch_video, bg='#FF9800', fg='white',
-                                   font=('Arial', 12, 'bold'), cursor='hand2', state='disabled')
+                                   font=('Arial', 10, 'bold'), cursor='hand2', state='disabled')  # Smaller font
         self.watch_btn.pack(fill='x', pady=2)
+
+        # Update the scrollable frame to fit its contents
+        scrollable_frame.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox("all"))
 
     def setup_right_panel(self, parent):
         """Setup the right panel with progress and output"""
 
         # Progress title
         progress_label = tk.Label(parent, text="📊 Progress & Output",
-                                  font=('Arial', 16, 'bold'), fg='#4CAF50', bg='#3b3b3b')
-        progress_label.pack(pady=10)
+                                  font=('Arial', 14, 'bold'), fg='#4CAF50', bg='#3b3b3b')  # Smaller font
+        progress_label.pack(pady=(10, 8))
 
         # Progress frame
         progress_frame = tk.Frame(parent, bg='#3b3b3b')
-        progress_frame.pack(fill='x', padx=10, pady=5)
+        progress_frame.pack(fill='x', padx=10, pady=4)  # Reduced padding
 
         # Progress bar with percentage
         self.progress = ttk.Progressbar(progress_frame, mode='determinate', maximum=100)
         self.progress.pack(fill='x', pady=2)
 
         self.progress_label = tk.Label(progress_frame, text="0% - Ready to process",
-                                       fg='#4CAF50', bg='#3b3b3b', font=('Arial', 11, 'bold'))
+                                       fg='#4CAF50', bg='#3b3b3b', font=('Arial', 10, 'bold'))  # Smaller font
         self.progress_label.pack(pady=2)
 
         # Status label
         self.status_label = tk.Label(parent, text="Ready to process video",
-                                     fg='#4CAF50', bg='#3b3b3b', font=('Arial', 12, 'bold'))
-        self.status_label.pack(pady=5)
+                                     fg='#4CAF50', bg='#3b3b3b', font=('Arial', 11, 'bold'))  # Smaller font
+        self.status_label.pack(pady=4)
 
         # Estimated time
         self.time_label = tk.Label(parent, text="",
-                                   fg='#888', bg='#3b3b3b', font=('Arial', 10))
+                                   fg='#888', bg='#3b3b3b', font=('Arial', 9))  # Smaller font
         self.time_label.pack(pady=2)
 
         # Output text area
         output_frame = tk.LabelFrame(parent, text="📝 Processing Log",
-                                     fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        output_frame.pack(fill='both', expand=True, padx=10, pady=10)
+                                     fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        output_frame.pack(fill='both', expand=True, padx=10, pady=8)
 
         self.output_text = scrolledtext.ScrolledText(output_frame,
                                                      bg='#1e1e1e', fg='#00ff00',
-                                                     font=('Consolas', 9),
-                                                     height=12, wrap='word')
+                                                     font=('Consolas', 8),  # Smaller font
+                                                     height=10, wrap='word')  # Smaller height
         self.output_text.pack(fill='both', expand=True, padx=5, pady=5)
 
         # Results frame
         results_frame = tk.LabelFrame(parent, text="🎯 Results",
-                                      fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
-        results_frame.pack(fill='x', padx=10, pady=(0, 10))
+                                      fg='white', bg='#3b3b3b', font=('Arial', 9, 'bold'))  # Smaller font
+        results_frame.pack(fill='x', padx=10, pady=(0, 8))
 
         self.results_text = tk.Label(results_frame, text="No results yet",
-                                     fg='#888', bg='#3b3b3b', font=('Arial', 10),
+                                     fg='#888', bg='#3b3b3b', font=('Arial', 9),  # Smaller font
                                      wraplength=300, justify='left')
-        self.results_text.pack(padx=5, pady=5)
+        self.results_text.pack(padx=5, pady=4)
 
         # Action buttons for results
         results_button_frame = tk.Frame(results_frame, bg='#3b3b3b')
-        results_button_frame.pack(fill='x', padx=5, pady=5)
+        results_button_frame.pack(fill='x', padx=5, pady=4)
 
         self.open_srt_btn = tk.Button(results_button_frame, text="📄 Open SRT",
                                       command=self.open_srt_file, bg='#2196F3', fg='white',
-                                      font=('Arial', 10, 'bold'), cursor='hand2', state='disabled')
+                                      font=('Arial', 9, 'bold'), cursor='hand2', state='disabled')  # Smaller font
         self.open_srt_btn.pack(side='left', padx=2)
 
         self.open_folder_btn = tk.Button(results_button_frame, text="📁 Folder",
                                          command=self.open_output_folder, bg='#2196F3', fg='white',
-                                         font=('Arial', 10, 'bold'), cursor='hand2', state='disabled')
+                                         font=('Arial', 9, 'bold'), cursor='hand2', state='disabled')  # Smaller font
         self.open_folder_btn.pack(side='right', padx=2)
 
     def get_cache_info(self):

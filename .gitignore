@@ -1,0 +1,28 @@
+# Build artifacts
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+
+# Installer files
+installer/
+*.iss
+
+# Release files
+github_release/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
