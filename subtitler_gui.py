@@ -12,6 +12,10 @@ from datetime import timedelta
 import subprocess
 import sys
 import webbrowser
+import cv2
+import numpy as np
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import the subtitler classes
 import speech_recognition as sr
@@ -22,10 +26,227 @@ import wave
 import torch
 
 
+class OptimizedAudioExtractor:
+    """Faster audio extraction with multiple methods"""
+
+    @staticmethod
+    def extract_audio_ffmpeg(video_path, audio_path, sample_rate=16000, channels=1):
+        """Ultra-fast audio extraction using FFmpeg directly"""
+        try:
+            cmd = [
+                'ffmpeg', '-y',  # Overwrite output
+                '-i', video_path,
+                '-acodec', 'pcm_s16le',  # Fast codec
+                '-ar', str(sample_rate),  # Lower sample rate for Whisper
+                '-ac', str(channels),  # Mono audio
+                '-loglevel', 'quiet',  # Suppress output
+                audio_path
+            ]
+
+            subprocess.run(cmd, check=True, capture_output=True)
+            return True
+
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    @staticmethod
+    def extract_audio_moviepy_optimized(video_path, audio_path,
+                                        sample_rate=16000,
+                                        target_duration=None,
+                                        quality_preset='ultrafast'):
+        """Optimized MoviePy extraction"""
+        try:
+            # Load video with minimal processing
+            video = mp.VideoFileClip(video_path)
+
+            # Trim video if only processing part of it
+            if target_duration and target_duration < video.duration:
+                video = video.subclip(0, target_duration)
+
+            audio = video.audio
+
+            # Use lower quality settings for speed
+            audio_params = {
+                'fps': sample_rate,
+                'nbytes': 2,  # 16-bit
+                'verbose': False,
+                'logger': None,
+                'temp_audiofile': None  # Let moviepy handle temp files
+            }
+
+            audio.write_audiofile(audio_path, **audio_params)
+
+            # Cleanup
+            audio.close()
+            video.close()
+
+            return True
+
+        except Exception as e:
+            print(f"MoviePy extraction failed: {e}")
+            return False
+
+
+class FastWhisperProcessor:
+    """Optimized Whisper processing"""
+
+    def __init__(self, model_size='base', device='auto', use_fast_tokenizer=True):
+        self.model_size = model_size
+        self.device = self._get_optimal_device(device)
+        self.model = None
+        self.use_fast_tokenizer = use_fast_tokenizer
+
+    def _get_optimal_device(self, device):
+        """Get the best available device"""
+        if device == 'auto':
+            if torch.cuda.is_available():
+                return 'cuda'
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                return 'mps'  # Apple Silicon
+            else:
+                return 'cpu'
+        return device
+
+    def load_model(self):
+        """Load model with optimizations"""
+        if self.model is None:
+            # Load with optimizations
+            self.model = whisper.load_model(
+                self.model_size,
+                device=self.device
+            )
+
+
+        return self.model
+
+    def transcribe_optimized(self, audio_path, language_hint=None,
+                             chunk_duration=30, overlap=2):
+        """Optimized transcription with chunking"""
+
+        model = self.load_model()
+
+        # Transcription options for speed
+        options = {
+            'fp16': self.device == "cuda",
+            'language': language_hint,
+            'task': 'transcribe',
+            'verbose': False,
+            'beam_size': 1,  # Faster than default beam search
+            'best_of': 1,  # Don't generate multiple candidates
+            'temperature': 0,  # Deterministic output
+            'compression_ratio_threshold': 2.4,
+            'logprob_threshold': -1.0,
+            'no_speech_threshold': 0.6,
+            'condition_on_previous_text': False  # Faster processing
+        }
+
+        # Try fast transcription first
+        try:
+            result = model.transcribe(audio_path, **options)
+            return result
+
+        except Exception as e:
+            print(f"Fast transcription failed: {e}")
+            # Fallback to default settings
+            return model.transcribe(audio_path, fp16=self.device == "cuda")
+
+
+class VideoPreprocessor:
+    """Preprocess video for faster subtitle generation"""
+
+    @staticmethod
+    def get_video_info_fast(video_path):
+        """Get video info without loading entire video"""
+        try:
+            cap = cv2.VideoCapture(video_path)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            duration = frame_count / fps if fps > 0 else 0
+            cap.release()
+
+            return {
+                'duration': duration,
+                'fps': fps,
+                'frame_count': frame_count,
+                'width': width,
+                'height': height,
+                'file_size': os.path.getsize(video_path)
+            }
+
+        except Exception:
+            # Fallback to moviepy
+            try:
+                video = mp.VideoFileClip(video_path)
+                info = {
+                    'duration': video.duration,
+                    'fps': video.fps,
+                    'width': video.w,
+                    'height': video.h,
+                    'file_size': os.path.getsize(video_path)
+                }
+                video.close()
+                return info
+
+            except Exception:
+                return None
+
+    @staticmethod
+    def should_downsample_audio(duration, file_size_mb):
+        """Decide if we should downsample audio for speed"""
+        # For videos longer than 30 minutes or larger than 500MB
+        return duration > 1800 or file_size_mb > 500
+
+    @staticmethod
+    def estimate_processing_time(video_info, model_size, device):
+        """More accurate processing time estimation"""
+        if not video_info:
+            return "Unknown"
+
+        duration = video_info['duration']
+        file_size_mb = video_info['file_size'] / (1024 * 1024)
+
+        # Base processing factors (seconds of processing per second of video)
+        device_factors = {
+            'cuda': 0.1,  # GPU is ~10x faster
+            'mps': 0.2,  # Apple Silicon
+            'cpu': 1.0  # CPU baseline
+        }
+
+        model_factors = {
+            'tiny': 0.3,
+            'base': 1.0,
+            'small': 2.0,
+            'medium': 4.0,
+            'large': 8.0
+        }
+
+        device_factor = device_factors.get(device, 1.0)
+        model_factor = model_factors.get(model_size, 1.0)
+
+        # Calculate base processing time
+        base_time = duration * device_factor * model_factor
+
+        # Add overhead for large files
+        if file_size_mb > 100:
+            base_time *= 1.2
+
+        # Add audio extraction time
+        extraction_time = min(30, file_size_mb * 0.1)
+
+        total_time = base_time + extraction_time
+
+        if total_time < 60:
+            return f"~{int(total_time)} seconds"
+        else:
+            return f"~{total_time / 60:.1f} minutes"
+
+
 class SubtitlerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("🎬 Auto Subtitler - GPU Accelerated v2.0")
+        self.root.title("🎬 Auto Subtitler - GPU Accelerated v2.0 (Optimized)")
         self.root.geometry("1000x750")
         self.root.configure(bg='#2b2b2b')
 
@@ -38,6 +259,7 @@ class SubtitlerGUI:
         self.use_gpu = tk.BooleanVar(value=True)
         self.auto_translate = tk.BooleanVar(value=True)
         self.use_cache = tk.BooleanVar(value=True)
+        self.optimization_mode = tk.StringVar(value='balanced')  # New: optimization mode
 
         # Queue for thread communication
         self.message_queue = queue.Queue()
@@ -51,7 +273,7 @@ class SubtitlerGUI:
         self.total_steps = 0
 
         # Cache directory
-        self.cache_dir = "../transcriper/subtitler_cache"
+        self.cache_dir = "subtitler_cache"
         os.makedirs(self.cache_dir, exist_ok=True)
 
         # Check GPU availability
@@ -180,11 +402,12 @@ class SubtitlerGUI:
         title_frame = tk.Frame(self.root, bg='#2b2b2b')
         title_frame.pack(fill='x', pady=10)
 
-        title_label = tk.Label(title_frame, text="🎬 Auto Subtitler v2.0",
+        title_label = tk.Label(title_frame, text="🎬 Auto Subtitler v2.0 (Optimized)",
                                font=('Arial', 24, 'bold'), fg='#4CAF50', bg='#2b2b2b')
         title_label.pack()
 
-        subtitle_label = tk.Label(title_frame, text="AI-Powered Video Subtitle Generation with Smart Caching",
+        subtitle_label = tk.Label(title_frame,
+                                  text="AI-Powered Video Subtitle Generation with Smart Caching & Speed Optimizations",
                                   font=('Arial', 12), fg='#888', bg='#2b2b2b')
         subtitle_label.pack()
 
@@ -361,8 +584,32 @@ class SubtitlerGUI:
                                          fg='#888', bg='#3b3b3b', font=('Arial', 8))
         self.model_info_label.pack(anchor='w', padx=5)
 
+        # Optimization mode
+        optimization_frame = tk.LabelFrame(parent, text="⚡ Optimization Mode",
+                                           fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
+        optimization_frame.pack(fill='x', padx=10, pady=5)
+
+        optimization_label = tk.Label(optimization_frame, text="Speed vs Quality:", fg='white', bg='#3b3b3b')
+        optimization_label.pack(anchor='w', padx=5)
+
+        optimization_combo = ttk.Combobox(optimization_frame, textvariable=self.optimization_mode,
+                                          values=['ultra_fast', 'balanced', 'high_quality'], width=25)
+        optimization_combo.pack(padx=5, pady=2)
+        optimization_combo.set('balanced')
+
+        # Optimization info
+        optimization_info = {
+            'ultra_fast': '2-5x faster, good for previews',
+            'balanced': 'Good balance of speed and accuracy',
+            'high_quality': 'Best accuracy, slower processing'
+        }
+
+        self.optimization_info_label = tk.Label(optimization_frame, text=optimization_info.get('balanced', ''),
+                                                fg='#888', bg='#3b3b3b', font=('Arial', 8))
+        self.optimization_info_label.pack(anchor='w', padx=5)
+
         # Processing mode
-        mode_frame = tk.LabelFrame(parent, text="⚡ Processing Mode",
+        mode_frame = tk.LabelFrame(parent, text="🎬 Processing Mode",
                                    fg='white', bg='#3b3b3b', font=('Arial', 10, 'bold'))
         mode_frame.pack(fill='x', padx=10, pady=5)
 
@@ -663,16 +910,37 @@ class SubtitlerGUI:
         try:
             self.update_progress(5, "Initializing AI models...")
 
-            # Initialize subtitler
-            self.subtitler = AutoSubtitlerCore(
+            # Initialize subtitler with optimization settings
+            optimization_mode = self.optimization_mode.get()
+
+            if optimization_mode == 'ultra_fast':
+                model_size = 'tiny'
+                audio_quality = 'fast'
+                fast_mode = True
+                max_duration = 600  # Only first 10 minutes
+            elif optimization_mode == 'high_quality':
+                model_size = self.model_size.get()
+                audio_quality = 'high'
+                fast_mode = False
+                max_duration = None
+            else:  # balanced
+                model_size = self.model_size.get()
+                audio_quality = 'standard'
+                fast_mode = False
+                max_duration = None
+
+            self.subtitler = OptimizedSubtitlerCore(
                 use_whisper=True,
                 target_language=self.languages[self.target_language.get()],
                 use_gpu=self.use_gpu.get(),
-                whisper_model_size=self.model_size.get(),
+                whisper_model_size=model_size,
                 message_callback=self.message_queue.put,
                 progress_callback=self.progress_queue.put,
                 use_cache=self.use_cache.get(),
-                cache_dir=self.cache_dir
+                cache_dir=self.cache_dir,
+                fast_mode=fast_mode,
+                audio_quality=audio_quality,
+                max_duration=max_duration
             )
 
             video_path = self.video_path.get()
@@ -683,7 +951,7 @@ class SubtitlerGUI:
                 success = self.subtitler.real_time_subtitles(video_path)
             else:
                 self.update_progress(10, "Starting complete processing...")
-                success = self.subtitler.process_video_file(
+                success = self.subtitler.process_video_optimized(
                     video_path, output_path,
                     translate=self.auto_translate.get()
                 )
@@ -815,11 +1083,14 @@ class SubtitlerGUI:
                 messagebox.showerror("Error", f"Could not open folder: {e}")
 
 
-# Enhanced core processing class with caching and progress tracking
-class AutoSubtitlerCore:
+class OptimizedSubtitlerCore:
+    """Enhanced version of the original subtitler with speed optimizations"""
+
     def __init__(self, use_whisper=True, target_language='en', use_gpu=True,
                  whisper_model_size='base', message_callback=None, progress_callback=None,
-                 use_cache=True, cache_dir="subtitler_cache"):
+                 use_cache=True, cache_dir="subtitler_cache",
+                 fast_mode=False, audio_quality='standard', max_duration=None):
+
         self.use_whisper = use_whisper
         self.target_language = target_language
         self.use_gpu = use_gpu
@@ -830,26 +1101,34 @@ class AutoSubtitlerCore:
         self.cache_dir = cache_dir
         self.stop_processing = False
 
+        # New parameters for optimization
+        self.fast_mode = fast_mode
+        self.audio_quality = audio_quality
+        self.max_duration = max_duration
+
+        # Initialize optimized components
+        self.optimized_audio_extractor = OptimizedAudioExtractor()
+        self.fast_whisper_processor = FastWhisperProcessor(
+            model_size=whisper_model_size,
+            device='auto'
+        )
+        self.video_preprocessor = VideoPreprocessor()
+
         # Initialize translator with fallback options
         self.translator = None
         self.init_translator()
-
-        # Check GPU availability
-        self.device = self._check_gpu_availability()
 
         if use_whisper:
             self.message_callback(f"Loading Whisper model ({whisper_model_size})...")
             self.progress_callback({'percentage': 15, 'status': f'Loading {whisper_model_size} model...'})
 
             try:
-                self.whisper_model = whisper.load_model(whisper_model_size, device=self.device)
+                self.fast_whisper_processor.load_model()
                 self.message_callback("✅ Whisper model loaded successfully")
                 self.progress_callback({'percentage': 20, 'status': 'Model loaded successfully'})
             except Exception as e:
                 self.message_callback(f"❌ Error loading Whisper model: {e}")
                 raise
-        else:
-            self.recognizer = sr.Recognizer()
 
     def init_translator(self):
         """Initialize translator with error handling"""
@@ -861,17 +1140,6 @@ class AutoSubtitlerCore:
         except Exception as e:
             self.message_callback(f"⚠️ Translator initialization warning: {e}")
             self.translator = None
-
-    def _check_gpu_availability(self):
-        """Check if GPU is available and return appropriate device"""
-        if self.use_gpu and torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-            self.message_callback(f"🚀 Using GPU: {gpu_name} ({memory_gb:.1f} GB)")
-            return "cuda"
-        else:
-            self.message_callback("🖥️ Using CPU for processing")
-            return "cpu"
 
     def get_file_hash(self, filepath):
         """Generate hash for file caching"""
@@ -898,47 +1166,63 @@ class AutoSubtitlerCore:
 
         return audio_cache, transcription_cache, metadata_cache
 
-    def extract_audio(self, video_path, audio_path="temp_audio.wav"):
-        """Extract audio from video file with caching"""
-        if self.stop_processing:
-            return None
+    def extract_audio_optimized(self, video_path):
+        """Extract audio with multiple fallback methods"""
 
-        try:
-            # Check for cached audio first
-            if self.use_cache:
-                audio_cache, _, metadata_cache = self.get_cache_paths(video_path)
-                if audio_cache and os.path.exists(audio_cache):
-                    if self.is_cache_valid(video_path, metadata_cache):
-                        self.message_callback("💾 Using cached audio file")
-                        self.progress_callback({'percentage': 40, 'status': 'Using cached audio'})
-                        return audio_cache
+        # Check for cached audio first
+        if self.use_cache:
+            audio_cache, _, metadata_cache = self.get_cache_paths(video_path)
+            if audio_cache and os.path.exists(audio_cache):
+                if self.is_cache_valid(video_path, metadata_cache):
+                    self.message_callback("💾 Using cached audio file")
+                    self.progress_callback({'percentage': 40, 'status': 'Using cached audio'})
+                    return audio_cache
 
-            self.message_callback("🎵 Extracting audio from video...")
-            self.progress_callback({'percentage': 25, 'status': 'Extracting audio...'})
+        self.message_callback("🎵 Extracting audio from video...")
+        self.progress_callback({'percentage': 25, 'status': 'Extracting audio...'})
 
-            # Get video duration for progress tracking
-            video = mp.VideoFileClip(video_path)
-            duration = video.duration
-            self.message_callback(f"📹 Video duration: {duration:.1f} seconds")
+        # Get video info first
+        video_info = self.video_preprocessor.get_video_info_fast(video_path)
+        if not video_info:
+            raise Exception("Could not analyze video file")
 
-            audio = video.audio
+        # Determine optimal audio settings
+        duration = video_info['duration']
+        file_size_mb = video_info['file_size'] / (1024 * 1024)
 
-            # Use cache path if caching is enabled
-            if self.use_cache:
-                audio_cache, _, _ = self.get_cache_paths(video_path)
-                if audio_cache:
-                    audio_path = audio_cache
+        # Use lower quality for large files or fast mode
+        if self.audio_quality == 'fast' or self.video_preprocessor.should_downsample_audio(duration, file_size_mb):
+            sample_rate = 16000  # Whisper's native rate
+            channels = 1  # Mono
+        elif self.audio_quality == 'high':
+            sample_rate = 44100
+            channels = 2
+        else:  # standard
+            sample_rate = 16000
+            channels = 1
 
-            audio.write_audiofile(audio_path, verbose=False, logger=None)
-            video.close()
+        # Create temporary audio file
+        audio_path = os.path.join(tempfile.gettempdir(),
+                                  f"temp_audio_{int(time.time())}.wav")
 
-            self.message_callback("✅ Audio extraction completed")
-            self.progress_callback({'percentage': 40, 'status': 'Audio extraction completed'})
+        # Try extraction methods in order of speed
+        methods = [
+            ('FFmpeg (fastest)', lambda: self.optimized_audio_extractor.extract_audio_ffmpeg(
+                video_path, audio_path, sample_rate, channels)),
+            ('MoviePy (fallback)', lambda: self.optimized_audio_extractor.extract_audio_moviepy_optimized(
+                video_path, audio_path, sample_rate, self.max_duration))
+        ]
 
-            return audio_path
-        except Exception as e:
-            self.message_callback(f"❌ Error extracting audio: {e}")
-            return None
+        for method_name, method_func in methods:
+            try:
+                if method_func():
+                    self.message_callback(f"✅ Audio extracted using {method_name}")
+                    return audio_path
+            except Exception as e:
+                self.message_callback(f"❌ {method_name} failed: {e}")
+                continue
+
+        raise Exception("All audio extraction methods failed")
 
     def is_cache_valid(self, video_path, metadata_path):
         """Check if cached files are still valid"""
@@ -994,8 +1278,8 @@ class AutoSubtitlerCore:
             self.message_callback(f"Error loading transcription cache: {e}")
             return None, None
 
-    def transcribe_with_whisper(self, audio_path, video_path=None):
-        """Transcribe audio using Whisper with caching"""
+    def transcribe_with_whisper_optimized(self, audio_path, video_path=None):
+        """Optimized transcription using Whisper with caching"""
         if self.stop_processing:
             return None, None
 
@@ -1020,20 +1304,23 @@ class AutoSubtitlerCore:
 
             start_time = time.time()
 
-            # Get audio duration for better progress tracking
-            try:
-                with wave.open(audio_path, 'rb') as wav_file:
-                    frames = wav_file.getnframes()
-                    sample_rate = wav_file.getframerate()
-                    duration = frames / float(sample_rate)
-                    self.message_callback(f"🎵 Audio duration: {duration:.1f} seconds")
-            except:
-                duration = 0
+            # Detect language from first few seconds for hint in fast mode
+            language_hint = None
+            if self.fast_mode:
+                try:
+                    # Extract first 30 seconds for language detection
+                    temp_audio = self._extract_audio_segment(video_path, 0, 30)
+                    temp_result = self.fast_whisper_processor.transcribe_optimized(temp_audio)
+                    language_hint = temp_result.get('language')
+                    os.remove(temp_audio)
+                    self.message_callback(f"🌐 Detected language hint: {language_hint}")
+                except:
+                    pass
 
-            result = self.whisper_model.transcribe(
+            # Use optimized transcription
+            result = self.fast_whisper_processor.transcribe_optimized(
                 audio_path,
-                fp16=self.device == "cuda",
-                verbose=False
+                language_hint=language_hint
             )
 
             if self.stop_processing:
@@ -1050,9 +1337,16 @@ class AutoSubtitlerCore:
             self.message_callback(f"📝 Found {len(segments)} speech segments")
 
             # Calculate processing speed
-            if duration > 0:
-                speed_factor = duration / processing_time
-                self.message_callback(f"🚀 Processing speed: {speed_factor:.1f}x real-time")
+            try:
+                with wave.open(audio_path, 'rb') as wav_file:
+                    frames = wav_file.getnframes()
+                    sample_rate = wav_file.getframerate()
+                    duration = frames / float(sample_rate)
+                    if duration > 0:
+                        speed_factor = duration / processing_time
+                        self.message_callback(f"🚀 Processing speed: {speed_factor:.1f}x real-time")
+            except:
+                pass
 
             # Cache the transcription
             if self.use_cache and video_path:
@@ -1125,7 +1419,7 @@ class AutoSubtitlerCore:
         milliseconds = int((seconds - int(seconds)) * 1000)
         return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d},{milliseconds:03d}"
 
-    def create_srt(self, segments, output_path, translate=False, detected_lang=None):
+    def create_srt_optimized(self, segments, output_path, translate=False, detected_lang=None):
         """Create SRT subtitle file from segments with progress tracking"""
         if self.stop_processing:
             return False
@@ -1185,47 +1479,51 @@ class AutoSubtitlerCore:
             self.message_callback(f"❌ Error creating SRT file: {e}")
             return False
 
-    def process_video_file(self, video_path, output_srt, translate=False):
-        """Process entire video file with enhanced progress tracking"""
+    def process_video_optimized(self, video_path, output_srt, translate=False):
+        """Optimized video processing with enhanced progress tracking"""
         if self.stop_processing:
             return False
 
         self.message_callback(f"🎬 Processing video: {os.path.basename(video_path)}")
 
-        # Get video info
+        # Get video info for better estimation
         try:
-            video = mp.VideoFileClip(video_path)
-            duration = video.duration
-            file_size = os.path.getsize(video_path) / (1024 ** 2)  # MB
-            video.close()
+            video_info = self.video_preprocessor.get_video_info_fast(video_path)
+            if video_info:
+                duration = video_info['duration']
+                file_size = video_info['file_size'] / (1024 * 1024)  # MB
 
-            self.message_callback(f"📊 Video info: {duration:.1f}s, {file_size:.1f} MB")
+                self.message_callback(f"📊 Video info: {duration:.1f}s, {file_size:.1f} MB")
 
-            # Estimate processing time
-            estimated_time = self.estimate_processing_time(duration, file_size)
-            if estimated_time:
-                self.progress_callback({
-                    'percentage': 5,
-                    'status': 'Analyzing video...',
-                    'time_estimate': estimated_time
-                })
+                # Estimate processing time
+                estimated_time = self.video_preprocessor.estimate_processing_time(
+                    video_info,
+                    self.whisper_model_size,
+                    self.fast_whisper_processor.device
+                )
+                if estimated_time:
+                    self.progress_callback({
+                        'percentage': 5,
+                        'status': 'Analyzing video...',
+                        'time_estimate': estimated_time
+                    })
         except Exception as e:
             self.message_callback(f"⚠️ Could not analyze video: {e}")
 
-        # Extract audio (with caching)
-        audio_path = self.extract_audio(video_path)
+        # Extract audio with optimizations
+        audio_path = self.extract_audio_optimized(video_path)
         if not audio_path or self.stop_processing:
             return False
 
-        # Transcribe audio (with caching)
-        segments, detected_lang = self.transcribe_with_whisper(audio_path, video_path)
+        # Transcribe audio with optimizations
+        segments, detected_lang = self.transcribe_with_whisper_optimized(audio_path, video_path)
 
         if not segments or self.stop_processing:
             self.message_callback("❌ Failed to transcribe audio")
             return False
 
         # Create SRT file
-        success = self.create_srt(segments, output_srt, translate, detected_lang)
+        success = self.create_srt_optimized(segments, output_srt, translate, detected_lang)
 
         if self.stop_processing:
             return False
@@ -1238,33 +1536,31 @@ class AutoSubtitlerCore:
 
         return success
 
-    def estimate_processing_time(self, duration, file_size_mb):
-        """Estimate processing time based on video properties"""
+    def _extract_audio_segment(self, video_path, start_time, duration):
+        """Extract a specific segment of audio"""
+        temp_audio = os.path.join(tempfile.gettempdir(),
+                                  f"temp_segment_{int(time.time())}.wav")
+
         try:
-            # Base time estimates (very rough)
-            if self.device == "cuda":
-                base_factor = 0.1  # GPU is ~10x faster
-            else:
-                base_factor = 1.0
-
-            model_factors = {
-                'tiny': 0.5, 'base': 1.0, 'small': 2.0, 'medium': 4.0, 'large': 8.0
-            }
-
-            model_factor = model_factors.get(self.whisper_model_size, 1.0)
-            estimated_seconds = duration * base_factor * model_factor
-
-            # Add time for audio extraction and file operations
-            estimated_seconds += min(30, file_size_mb * 0.5)
-
-            if estimated_seconds < 60:
-                return f"{estimated_seconds:.0f} seconds"
-            else:
-                minutes = estimated_seconds / 60
-                return f"{minutes:.1f} minutes"
-
-        except Exception as e:
-            return None
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-ss', str(start_time),
+                '-t', str(duration),
+                '-acodec', 'pcm_s16le',
+                '-ar', '16000',
+                '-ac', '1',
+                '-loglevel', 'quiet',
+                temp_audio
+            ]
+            subprocess.run(cmd, check=True)
+            return temp_audio
+        except:
+            # Fallback to moviepy
+            video = mp.VideoFileClip(video_path).subclip(start_time, start_time + duration)
+            video.audio.write_audiofile(temp_audio, verbose=False, logger=None)
+            video.close()
+            return temp_audio
 
     def real_time_subtitles(self, video_path):
         """Generate subtitles in real-time simulation"""
@@ -1272,11 +1568,11 @@ class AutoSubtitlerCore:
         self.progress_callback({'percentage': 10, 'status': 'Starting real-time mode...'})
 
         # For demonstration, process the video but simulate real-time output
-        audio_path = self.extract_audio(video_path)
+        audio_path = self.extract_audio_optimized(video_path)
         if not audio_path or self.stop_processing:
             return False
 
-        segments, detected_lang = self.transcribe_with_whisper(audio_path, video_path)
+        segments, detected_lang = self.transcribe_with_whisper_optimized(audio_path, video_path)
 
         if segments and not self.stop_processing:
             self.message_callback("🎥 Real-time subtitle preview:")
@@ -1329,6 +1625,7 @@ def main():
         import speech_recognition as sr
         from googletrans import Translator
         import requests
+        import cv2
 
         print("✅ All dependencies loaded successfully")
 
@@ -1336,7 +1633,8 @@ def main():
         print(f"❌ Missing dependency: {e}")
         print("\nPlease install required packages:")
         print("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118")
-        print("pip install openai-whisper moviepy speechrecognition googletrans==4.0.0rc1 pyaudio requests")
+        print(
+            "pip install openai-whisper moviepy speechrecognition googletrans==4.0.0rc1 pyaudio requests opencv-python")
         return
 
     # Create and run GUI
@@ -1352,7 +1650,7 @@ def main():
 
     app = SubtitlerGUI(root)
 
-    print("🎬 Auto Subtitler v2.0 GUI Started")
+    print("🎬 Auto Subtitler v2.0 GUI Started (Optimized)")
     print("GPU Available:", torch.cuda.is_available())
     print("Cache Directory:", app.cache_dir)
 
