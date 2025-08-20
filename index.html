@@ -18,6 +18,8 @@
             --light: #f9fafb;
             --gray: #6b7280;
             --success: #059669;
+            --accent: #8b5cf6;
+            --warning: #f59e0b;
         }
 
         * {
@@ -32,6 +34,7 @@
             color: #333;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
+            overflow-x: hidden;
         }
 
         .container {
@@ -72,12 +75,17 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .logo:hover {
+            transform: scale(1.05);
         }
 
         .nav-links {
             display: flex;
             list-style: none;
-            gap: 2rem;
+            gap: 1.5rem;
         }
 
         .nav-links a {
@@ -87,11 +95,23 @@
             transition: all 0.3s ease;
             padding: 0.5rem 1rem;
             border-radius: 25px;
+            position: relative;
         }
 
-        .nav-links a:hover {
-            background: rgba(255, 255, 255, 0.2);
-            transform: translateY(-2px);
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            width: 0;
+            height: 2px;
+            background: var(--primary);
+            transition: all 0.3s ease;
+            transform: translateX(-50%);
+        }
+
+        .nav-links a:hover::after {
+            width: 70%;
         }
 
         .mobile-menu-btn {
@@ -101,6 +121,13 @@
             color: white;
             font-size: 1.5rem;
             cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 5px;
+            transition: all 0.3s ease;
+        }
+
+        .mobile-menu-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
         }
 
         /* Hero Section */
@@ -135,6 +162,7 @@
             margin-bottom: 1rem;
             animation: fadeInUp 1s ease;
             font-weight: 700;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
         }
 
         .hero p {
@@ -162,6 +190,12 @@
             align-items: center;
             gap: 0.5rem;
             backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        .badge:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
         }
 
         .cta-buttons {
@@ -184,6 +218,8 @@
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
+            position: relative;
+            overflow: hidden;
         }
 
         .btn-primary {
@@ -231,6 +267,11 @@
 
         .stat-item {
             padding: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .stat-item:hover {
+            transform: translateY(-5px);
         }
 
         .stat-number {
@@ -238,6 +279,10 @@
             font-weight: 700;
             color: var(--primary);
             margin-bottom: 0.5rem;
+            background: linear-gradient(45deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
         .stat-label {
@@ -263,14 +308,15 @@
         .app-screenshot img {
             max-width: 100%;
             height: auto;
-            border-radius: 15px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5);
             transition: all 0.3s ease;
+            border: 1px solid rgba(0, 0, 0, 0.1);
         }
 
         .app-screenshot img:hover {
             transform: translateY(-5px);
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 1);
         }
 
         .screenshot-caption {
@@ -294,6 +340,20 @@
             color: var(--dark);
             margin-bottom: 1rem;
             font-weight: 700;
+            position: relative;
+            display: inline-block;
+        }
+
+        .section-header h2::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60px;
+            height: 4px;
+            background: linear-gradient(45deg, var(--primary), var(--accent));
+            border-radius: 2px;
         }
 
         .section-header p {
@@ -321,6 +381,23 @@
             display: flex;
             flex-direction: column;
             height: 100%;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 5px;
+            height: 0;
+            background: linear-gradient(to bottom, var(--primary), var(--accent));
+            transition: height 0.3s ease;
+        }
+
+        .feature-card:hover::before {
+            height: 100%;
         }
 
         .feature-card:hover {
@@ -332,7 +409,7 @@
         .feature-icon {
             font-size: 2.5rem;
             margin-bottom: 1.5rem;
-            background: linear-gradient(45deg, var(--primary), var(--primary-dark));
+            background: linear-gradient(45deg, var(--primary), var(--accent));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
@@ -343,6 +420,11 @@
             justify-content: center;
             border-radius: 12px;
             background-color: rgba(99, 102, 241, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover .feature-icon {
+            transform: scale(1.1);
         }
 
         .feature-card h3 {
@@ -367,6 +449,7 @@
             align-items: center;
             gap: 0.5rem;
             margin-top: auto;
+            transition: all 0.3s ease;
         }
 
         .feature-link:hover {
@@ -378,6 +461,7 @@
         .how-it-works {
             background: #f9fafb;
             padding: 80px 0;
+            text-align: center;
             margin: 80px 0;
             border-radius: 20px;
         }
@@ -386,6 +470,7 @@
             display: flex;
             flex-direction: column;
             gap: 3rem;
+            text-align: left;
             max-width: 800px;
             margin: 0 auto;
         }
@@ -394,6 +479,11 @@
             display: flex;
             align-items: flex-start;
             gap: 2rem;
+            transition: all 0.3s ease;
+        }
+
+        .step:hover {
+            transform: translateX(10px);
         }
 
         .step-number {
@@ -408,6 +498,7 @@
             font-size: 1.5rem;
             font-weight: bold;
             flex-shrink: 0;
+            box-shadow: 0 5px 15px rgba(99, 102, 241, 0.3);
         }
 
         .step-content h3 {
@@ -423,10 +514,12 @@
         /* Testimonials */
         .testimonials {
             padding: 80px 0;
+            text-align: center;
         }
 
         .testimonials-grid {
             display: grid;
+            text-align: left;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 2rem;
         }
@@ -437,6 +530,12 @@
             border-radius: 15px;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
             position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .testimonial-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
         }
 
         .testimonial-card::before {
@@ -473,6 +572,7 @@
             color: white;
             font-weight: bold;
             font-size: 1.2rem;
+            background: linear-gradient(45deg, var(--primary), var(--accent));
         }
 
         .author-info h4 {
@@ -548,6 +648,8 @@
             gap: 0.5rem;
             transition: all 0.3s ease;
             box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+            position: relative;
+            overflow: hidden;
         }
 
         .download-btn:hover {
@@ -561,12 +663,32 @@
             font-size: 0.9rem;
         }
 
+        .version-loading {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         /* FAQ Section */
         .faq {
             background: white;
             padding: 80px 0;
             border-radius: 20px;
             margin: 80px 0;
+            text-align: center;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
         }
 
@@ -581,6 +703,11 @@
             border: 1px solid #e5e7eb;
             border-radius: 10px;
             overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .faq-item:hover {
+            border-color: var(--primary);
         }
 
         .faq-question {
@@ -592,6 +719,11 @@
             cursor: pointer;
             font-weight: 600;
             color: var(--dark);
+            transition: all 0.3s ease;
+        }
+
+        .faq-question:hover {
+            background: #f3f4f6;
         }
 
         .faq-question i {
@@ -620,6 +752,7 @@
             background: white;
             padding: 60px 0;
             margin: 80px 0;
+            text-align: center;
             border-radius: 20px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
         }
@@ -633,12 +766,21 @@
         .req-card {
             text-align: center;
             padding: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .req-card:hover {
+            transform: translateY(-5px);
         }
 
         .req-card i {
             font-size: 2.5rem;
             color: var(--primary);
             margin-bottom: 1rem;
+            background: linear-gradient(45deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
         .req-card h3 {
@@ -658,11 +800,28 @@
             margin: 80px 0;
             border-radius: 20px;
             text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%23ffffff' fill-opacity='0.05' d='M0,160L48,138.7C96,117,192,75,288,64C384,53,480,75,576,96C672,117,768,139,864,138.7C960,139,1056,117,1152,101.3C1248,85,1344,75,1392,69.3L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E");
+            background-size: cover;
+            background-position: bottom;
+            z-index: 0;
         }
 
         .cta-section h2 {
             font-size: 2.5rem;
             margin-bottom: 1rem;
+            position: relative;
+            z-index: 1;
         }
 
         .cta-section p {
@@ -672,6 +831,8 @@
             max-width: 700px;
             margin-left: auto;
             margin-right: auto;
+            position: relative;
+            z-index: 1;
         }
 
         /* Footer */
@@ -773,6 +934,56 @@
             animation: fadeInUp 0.8s ease forwards;
         }
 
+        /* Scroll to top button */
+        .scroll-to-top {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 50px;
+            height: 50px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            opacity: 0;
+            visibility: hidden;
+            z-index: 999;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+        }
+
+        .scroll-to-top.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .scroll-to-top:hover {
+            background: var(--primary-dark);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
+        }
+
+        /* Progress bar */
+        .progress-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: transparent;
+            z-index: 1001;
+        }
+
+        .progress-bar {
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary), var(--accent));
+            width: 0%;
+            transition: width 0.2s ease;
+        }
+
         /* Responsive Design */
         @media (max-width: 768px) {
             .hero h1 {
@@ -844,6 +1055,16 @@
     </style>
 </head>
 <body>
+    <!-- Progress Bar -->
+    <div class="progress-container">
+        <div class="progress-bar" id="progress-bar"></div>
+    </div>
+
+    <!-- Scroll to Top Button -->
+    <div class="scroll-to-top" id="scroll-to-top">
+        <i class="fas fa-arrow-up"></i>
+    </div>
+
     <!-- Header -->
     <header>
         <nav class="container">
@@ -1040,7 +1261,7 @@
         <section class="testimonials scroll-reveal">
             <div class="section-header">
                 <h2>What Users Say</h2>
-                <p>Join thousands of satisfied content creators and professionals</p>
+                <h3>Join thousands of satisfied content creators and professionals</h3>
             </div>
 
             <div class="testimonials-grid">
@@ -1069,9 +1290,9 @@
                 <div class="testimonial-card">
                     <p class="testimonial-text">The smart caching feature means I can make quick edits without waiting for the entire video to process again. Brilliant!</p>
                     <div class="testimonial-author">
-                        <div class="author-avatar">TD</div>
+                        <div class="author-avatar">PO</div>
                         <div class="author-info">
-                            <h4>Thomas Davis</h4>
+                            <h4>Praise Olayemi</h4>
                             <p>Video Producer</p>
                         </div>
                     </div>
@@ -1087,17 +1308,21 @@
                 <h2><i class="fas fa-download"></i> Download Auto Subtitler</h2>
                 <p>Get started today with our easy installation options</p>
                 <div class="download-options">
-                    <a href="https://github.com/hhhpraise/auto-subtitler/releases/latest/download/AutoSubtitler_Setup.exe" class="download-btn">
+                    <a href="#" class="download-btn" id="windows-installer">
                         <i class="fas fa-download"></i> Windows Installer
                     </a>
-                    <a href="https://github.com/hhhpraise/auto-subtitler/releases/latest/download/AutoSubtitler.exe" class="download-btn">
+                    <a href="#" class="download-btn" id="portable-version">
                         <i class="fas fa-file"></i> Portable Version
                     </a>
                     <a href="https://github.com/hhhpraise/auto-subtitler/releases" class="download-btn" target="_blank">
                         <i class="fab fa-github"></i> All Releases
                     </a>
                 </div>
-                <p class="version-info">Current version: 1.2.0 | Size: 85 MB</p>
+                <p class="version-info">
+                    Current version: <span class="version-loading" id="version-info">
+                        <span class="spinner"></span> Loading...
+                    </span>
+                </p>
             </div>
         </section>
     </div>
@@ -1185,7 +1410,7 @@
                 <div class="req-card">
                     <i class="fas fa-hdd"></i>
                     <h3>Storage</h3>
-                    <p>500MB free space<br>SSD recommended</p>
+                    <p>Over 500MB free space<br>SSD recommended</p>
                 </div>
             </div>
         </section>
@@ -1251,6 +1476,45 @@
     </footer>
 
     <script>
+        // Fetch latest release info from GitHub
+        async function fetchLatestRelease() {
+            const versionInfo = document.getElementById('version-info');
+            const windowsInstaller = document.getElementById('windows-installer');
+            const portableVersion = document.getElementById('portable-version');
+
+            try {
+                const response = await fetch('https://api.github.com/repos/hhhpraise/auto-subtitler/releases/latest');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch release info');
+                }
+
+                const data = await response.json();
+                const version = data.tag_name;
+                const assets = data.assets;
+
+                // Update version info
+                versionInfo.innerHTML = version;
+
+                // Find download links
+                const installerAsset = assets.find(asset => asset.name.includes('AutoSubtitler_Setup'));
+                const portableAsset = assets.find(asset => asset.name.includes('AutoSubtitler.exe') && !asset.name.includes('Setup'));
+
+                if (installerAsset) {
+                    windowsInstaller.href = installerAsset.browser_download_url;
+                }
+
+                if (portableAsset) {
+                    portableVersion.href = portableAsset.browser_download_url;
+                }
+
+            } catch (error) {
+                console.error('Error fetching release info:', error);
+                versionInfo.innerHTML = '1.2.0 (fallback)';
+                windowsInstaller.href = 'https://github.com/hhhpraise/auto-subtitler/releases/latest/download/AutoSubtitler_Setup.exe';
+                portableVersion.href = 'https://github.com/hhhpraise/auto-subtitler/releases/latest/download/AutoSubtitler.exe';
+            }
+        }
+
         // Mobile menu toggle
         const menuBtn = document.querySelector('.mobile-menu-btn');
         const navLinks = document.querySelector('.nav-links');
@@ -1359,6 +1623,32 @@
             });
         });
 
+        // Scroll progress bar
+        window.addEventListener('scroll', () => {
+            const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
+            const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+            const scrolled = (winScroll / height) * 100;
+            document.getElementById('progress-bar').style.width = scrolled + '%';
+        });
+
+        // Scroll to top button
+        const scrollToTopBtn = document.getElementById('scroll-to-top');
+
+        window.addEventListener('scroll', () => {
+            if (window.pageYOffset > 300) {
+                scrollToTopBtn.classList.add('visible');
+            } else {
+                scrollToTopBtn.classList.remove('visible');
+            }
+        });
+
+        scrollToTopBtn.addEventListener('click', () => {
+            window.scrollTo({
+                top: 0,
+                behavior: 'smooth'
+            });
+        });
+
         // Add ripple animation
         const style = document.createElement('style');
         style.textContent = `
@@ -1370,6 +1660,11 @@
             }
         `;
         document.head.appendChild(style);
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchLatestRelease();
+        });
     </script>
 </body>
 </html>
