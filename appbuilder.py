@@ -6,6 +6,7 @@ import os
 import shutil
 import json
 import tempfile
+import glob
 from pathlib import Path
 
 
@@ -45,19 +46,71 @@ def install_pyinstaller():
 def install_innosetup():
     """Check if Inno Setup is available or provide download instructions"""
     try:
-        # Check if ISCC is available in PATH
-        result = subprocess.run(["ISCC", "/?"], capture_output=True, text=True)
+        # Check if ISCC is available in PATH using where command (more reliable on Windows)
+        result = subprocess.run(["where", "ISCC"], capture_output=True, text=True, shell=True)
         if result.returncode == 0:
             print("✅ Inno Setup is installed")
-            return True
-    except FileNotFoundError:
+            # Verify it actually works by checking version
+            version_result = subprocess.run(["ISCC", "/?"], capture_output=True, text=True, shell=True)
+            if version_result.returncode == 0:
+                return True
+            else:
+                print("❌ ISCC found but not working properly")
+                return False
+    except (FileNotFoundError, subprocess.CalledProcessError):
         pass
 
+    # Alternative check: Look for common installation paths
+    common_paths = [
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+    ]
+
+    for path in common_paths:
+        if os.path.exists(path):
+            print(f"✅ Inno Setup found at: {path}")
+            # Add it to the PATH for this session
+            innosetup_dir = os.path.dirname(path)
+            os.environ['PATH'] = innosetup_dir + os.pathsep + os.environ['PATH']
+            return True
+
     print("❌ Inno Setup not found")
-    print("📥 Please download and install Inno Setup from:")
+    print("🔥 Please download and install Inno Setup from:")
     print("   https://jrsoftware.org/isdl.php")
     print("   After installation, make sure to add it to your PATH")
+    print("   Or restart PyCharm after installation")
     return False
+
+
+def find_executable():
+    """Find the executable in various possible locations"""
+    possible_paths = [
+        "dist/AutoSubtitler.exe",
+        "dist/AutoSubtitler/AutoSubtitler.exe",
+        "build/AutoSubtitler/AutoSubtitler.exe",
+        "dist/main/AutoSubtitler.exe"
+    ]
+
+    # Also search for any .exe files in dist and build directories
+    search_patterns = [
+        "dist/**/*.exe",
+        "build/**/*.exe"
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            print(f"✅ Found executable at: {path}")
+            return path
+
+    # If not found in specific paths, search more broadly
+    for pattern in search_patterns:
+        for file_path in glob.glob(pattern, recursive=True):
+            if "AutoSubtitler" in file_path:
+                print(f"✅ Found executable at: {file_path}")
+                return file_path
+
+    print("❌ Could not find executable")
+    return None
 
 
 def create_spec_file():
@@ -79,7 +132,9 @@ a = Analysis(
         'torch', 'whisper', 'moviepy.editor', 'speech_recognition', 
         'googletrans', 'tkinter', 'queue', 'threading', 'hashlib', 
         'json', 'requests', 'urllib.request', 'subprocess', 'webbrowser', 
-        'wave', 'numpy', 'cv2', 'PIL', 'pydub'
+        'wave', 'numpy', 'cv2', 'PIL', 'pydub', 'whisper.transcribe',
+        'whisper.tokenizer', 'whisper.utils', 'whisper.decoding',
+        'whisper.model', 'whisper.audio'
     ],
     hookspath=[],
     hooksconfig={},
@@ -94,6 +149,21 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# Add necessary binaries (DLLs)
+import os
+import sys
+
+python_dir = os.path.dirname(sys.executable)
+python_dll = os.path.join(python_dir, 'python39.dll')
+if os.path.exists(python_dll):
+    a.binaries += [('python39.dll', python_dll, 'BINARY')]
+
+# Add other potential DLLs
+for dll in ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll']:
+    dll_path = os.path.join(python_dir, dll)
+    if os.path.exists(dll_path):
+        a.binaries += [(dll, dll_path, 'BINARY')]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
@@ -140,66 +210,240 @@ def build_executable():
     try:
         subprocess.run(cmd, check=True)
         print("✅ Build completed!")
-        print("📁 Executable location: dist/AutoSubtitler.exe")
-        return True
+
+        # Find where the executable was actually created
+        exe_path = find_executable()
+        if exe_path:
+            print(f"📁 Executable location: {exe_path}")
+            return True
+        else:
+            print("⚠️  Build completed but could not locate executable")
+            return False
     except subprocess.CalledProcessError as e:
         print(f"❌ Build failed: {e}")
         return False
 
 
 def build_onefile():
-    """Build as single file (slower startup but portable)"""
+    """Build as single file (slower startup but portable) - IMPROVED VERSION"""
     print("🔨 Building single-file executable...")
 
+    # Get Python directory
+    python_dir = os.path.dirname(sys.executable)
+
+    # Build the command with ALL necessary options for a truly standalone executable
     cmd = [
         "pyinstaller",
         "--onefile",
         "--windowed",
         "--name=AutoSubtitler",
-        "--icon=icon.ico",  # Optional: add an icon
         "--clean",
+        # Hidden imports for whisper and dependencies
+        "--hidden-import", "whisper",
+        "--hidden-import", "whisper.transcribe",
+        "--hidden-import", "whisper.tokenizer",
+        "--hidden-import", "whisper.utils",
+        "--hidden-import", "whisper.decoding",
+        "--hidden-import", "whisper.model",
+        "--hidden-import", "whisper.audio",
+        "--hidden-import", "torch",
+        "--hidden-import", "torchaudio",
+        "--hidden-import", "numpy",
+        "--hidden-import", "tkinter",
+        "--hidden-import", "queue",
+        "--hidden-import", "threading",
+        "--hidden-import", "moviepy.editor",
+        "--hidden-import", "speech_recognition",
+        "--hidden-import", "googletrans",
+        "--hidden-import", "requests",
+        "--hidden-import", "cv2",
+        "--hidden-import", "PIL",
+        "--hidden-import", "pydub",
+        # Collect all submodules for critical packages
+        "--collect-submodules", "whisper",
+        "--collect-submodules", "torch",
+        "--collect-submodules", "torchaudio",
+        # Copy metadata for packages that need it
+        "--copy-metadata", "torch",
+        "--copy-metadata", "torchaudio",
+        "--copy-metadata", "whisper",
+        # Add data files that might be needed
+        "--collect-data", "torch",
+        "--collect-data", "torchaudio",
+        "--collect-data", "whisper",
         "subtitler_gui.py"
     ]
 
     try:
         subprocess.run(cmd, check=True)
         print("✅ Single-file build completed!")
-        print("📁 Executable: dist/AutoSubtitler.exe")
-        return True
+
+        # Find where the executable was actually created
+        exe_path = find_executable()
+        if exe_path:
+            file_size = os.path.getsize(exe_path)
+            file_size_mb = file_size / (1024 * 1024)
+            print(f"📁 Executable: {exe_path}")
+            print(f"📏 File size: {file_size_mb:.1f} MB")
+
+            if file_size_mb > 1500:  # > 1.5GB
+                print("⚠️  Large executable detected!")
+                print("💡 Consider using the optimized build (Option 10) to reduce size")
+
+            return True
+        else:
+            print("⚠️  Build completed but could not locate executable")
+            return False
     except subprocess.CalledProcessError as e:
         print(f"❌ Build failed: {e}")
         return False
 
 
-def create_installer():
-    """Create an installer using Inno Setup"""
-    if not install_innosetup():
+def build_onefile_optimized():
+    """Build optimized single file (smaller size) - RECOMMENDED FOR LARGE APPS"""
+    print("🔨 Building optimized single-file executable...")
+    print("💡 This build excludes some components to reduce size")
+
+    cmd = [
+        "pyinstaller",
+        "--onefile",
+        "--windowed",
+        "--name=AutoSubtitler",
+        "--clean",
+        "--optimize=2",  # Python optimization
+        # Essential hidden imports only
+        "--hidden-import", "whisper.transcribe",
+        "--hidden-import", "whisper.tokenizer",
+        "--hidden-import", "whisper.utils",
+        "--hidden-import", "whisper.decoding",
+        "--hidden-import", "whisper.model",
+        "--hidden-import", "whisper.audio",
+        "--hidden-import", "tkinter",
+        "--hidden-import", "queue",
+        "--hidden-import", "threading",
+        # Exclude large unnecessary modules
+        "--exclude-module", "matplotlib",
+        "--exclude-module", "scipy",
+        "--exclude-module", "pandas",
+        "--exclude-module", "sklearn",
+        "--exclude-module", "tensorflow",
+        "--exclude-module", "keras",
+        "--exclude-module", "jupyter",
+        "--exclude-module", "IPython",
+        "--exclude-module", "notebook",
+        "--exclude-module", "sphinx",
+        "--exclude-module", "pytest",
+        "--exclude-module", "setuptools",
+        "--exclude-module", "wheel",
+        # Minimal data collection (only essential)
+        "--copy-metadata", "whisper",
+        "--collect-data", "whisper",
+        "subtitler_gui.py"
+    ]
+
+    try:
+        subprocess.run(cmd, check=True)
+        print("✅ Optimized build completed!")
+
+        exe_path = find_executable()
+        if exe_path:
+            file_size = os.path.getsize(exe_path)
+            file_size_mb = file_size / (1024 * 1024)
+            print(f"📁 Executable: {exe_path}")
+            print(f"📏 Optimized size: {file_size_mb:.1f} MB")
+            return True
+        else:
+            print("⚠️  Build completed but could not locate executable")
+            return False
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Build failed: {e}")
         return False
 
-    # Create the Inno Setup script
-    iss_content = """
+
+def check_vc_redist():
+    """Check if Microsoft Visual C++ Redistributable is installed"""
+    print("🔍 Checking for Microsoft Visual C++ Redistributable...")
+
+    # Common registry keys for VC++ Redistributable
+    vc_redist_keys = [
+        r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64",
+        r"SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+    ]
+
+    try:
+        import winreg
+        for key_path in vc_redist_keys:
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path)
+                winreg.CloseKey(key)
+                print("✅ Microsoft Visual C++ Redistributable is installed")
+                return True
+            except FileNotFoundError:
+                continue
+    except ImportError:
+        # Not on Windows, or no winreg module
+        pass
+
+    print("❌ Microsoft Visual C++ Redistributable is not installed")
+    print("💡 Download from: https://aka.ms/vs/16/release/vc_redist.x64.exe")
+    return False
+
+
+def create_installer():
+    """Create an installer using Inno Setup - FIXED VERSION WITH DISK SPANNING"""
+    # Find the executable first
+    exe_path = find_executable()
+    if not exe_path:
+        print("❌ Executable not found")
+        print("💡 Please build the executable first (options 1, 2, or 3)")
+        return False
+
+    # Convert to absolute path
+    exe_path = os.path.abspath(exe_path)
+
+    print(f"📁 Using executable: {exe_path}")
+
+    # Check if the executable actually exists
+    if not os.path.exists(exe_path):
+        print(f"❌ Executable not found at: {exe_path}")
+        return False
+
+    # Check file size and warn user
+    file_size = os.path.getsize(exe_path)
+    file_size_mb = file_size / (1024 * 1024)
+    print(f"📏 Executable size: {file_size_mb:.1f} MB")
+
+    if file_size > 2000000000:  # ~2GB
+        print("⚠️  Large executable detected! Enabling disk spanning for installer...")
+        disk_spanning = "DiskSpanning=yes"
+    else:
+        disk_spanning = "; DiskSpanning not needed for smaller files"
+
+    # For single-file builds, we don't need separate DLLs since they're embedded
+    # Create a simpler ISS file that only includes the executable
+    iss_content = f"""
 ; Script generated by the Auto Subtitler Build Script
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Auto Subtitler"
 #define MyAppVersion "2.0"
-#define MyAppPublisher "Your Name"
-#define MyAppURL "https://github.com/yourusername/auto-subtitler"
+#define MyAppPublisher "Hhhpraise"
+#define MyAppURL "https://github.com/hhhpraise/auto-subtitler"
 #define MyAppExeName "AutoSubtitler.exe"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application.
 ; Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
-AppId={{{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
-AppUpdatesURL={#MyAppURL}
-DefaultDirName={{autopf}}\{#MyAppName}
+AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}
+AppName={{#MyAppName}}
+AppVersion={{#MyAppVersion}}
+AppVerName={{#MyAppName}} {{#MyAppVersion}}
+AppPublisher={{#MyAppPublisher}}
+AppPublisherURL={{#MyAppURL}}
+AppSupportURL={{#MyAppURL}}
+AppUpdatesURL={{#MyAppURL}}
+DefaultDirName={{autopf}}\\{{#MyAppName}}
 DisableProgramGroupPage=yes
 ; Remove the following line to run in administrative install mode (install for all users.)
 PrivilegesRequired=lowest
@@ -208,39 +452,79 @@ OutputBaseFilename=AutoSubtitler_Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+; Enable disk spanning for large files (>2GB)
+{disk_spanning}
+; Set disk size if spanning is enabled
+DiskSliceSize=max
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{{cm:CreateDesktopIcon}}"; GroupDescription: "{{cm:AdditionalIcons}}"; Flags: unchecked
 
 [Files]
-Source: "dist\AutoSubtitler.exe"; DestDir: "{app}"; Flags: ignoreversion
-; NOTE: Don't use "Flags: ignoreversion" on any shared system files
+Source: "{exe_path}"; DestDir: "{{app}}"; Flags: ignoreversion
+; NOTE: For single-file builds, all DLLs are embedded in the executable
+; If you're using a directory build, uncomment and adjust the following lines:
+; Source: "dist\\AutoSubtitler\\*"; DestDir: "{{app}}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{{autoprograms}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"
+Name: "{{autodesktop}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{{app}}\\{{#MyAppExeName}}"; Description: "{{cm:LaunchProgram,{{#StringChange(MyAppName, '&', '&&')}}}}"; Flags: nowait postinstall skipifsilent
+
+[Registry]
+; Add any registry entries if needed for file associations, etc.
+
+[UninstallDelete]
+; Clean up any files created during runtime
+Type: filesandordirs; Name: "{{app}}"
 """
+
+    # Create installer directory if it doesn't exist
+    os.makedirs("installer", exist_ok=True)
 
     with open("installer.iss", "w") as f:
         f.write(iss_content)
 
     print("📝 Created Inno Setup script: installer.iss")
+    print(f"📁 Using executable from: {exe_path}")
 
-    # Compile the installer
-    try:
-        subprocess.run(["ISCC", "installer.iss"], check=True)
-        print("✅ Installer created successfully!")
-        print("📁 Installer location: installer/AutoSubtitler_Setup.exe")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Installer compilation failed: {e}")
+    # Now check if Inno Setup is available
+    if not install_innosetup():
+        print("⚠️  Inno Setup not found, but ISS file has been created")
+        print("💡 You can manually compile it with Inno Setup Compiler")
         return False
+
+    # Try multiple ways to run ISCC
+    iscc_commands = [
+        ["ISCC", "installer.iss"],  # Try PATH first
+        [r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "installer.iss"],  # Try common path
+        [r"C:\Program Files\Inno Setup 6\ISCC.exe", "installer.iss"]  # Try another common path
+    ]
+
+    for cmd in iscc_commands:
+        try:
+            print(f"🔄 Trying: {' '.join(cmd)}")
+            result = subprocess.run(cmd, check=True, shell=True, capture_output=True, text=True)
+            print("✅ Installer created successfully!")
+            print("📁 Installer location: installer/AutoSubtitler_Setup.exe")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Command failed: {e}")
+            if e.stderr:
+                print(f"Error output: {e.stderr}")
+            continue
+        except FileNotFoundError:
+            continue
+
+    print("❌ Installer compilation failed: Could not find or run ISCC")
+    print("💡 Try restarting PyCharm or manually running:")
+    print("   ISCC installer.iss")
+    return False
 
 
 def prepare_github_release():
@@ -254,12 +538,33 @@ def prepare_github_release():
     os.makedirs(release_dir)
 
     # Copy the executable
-    if os.path.exists("dist/AutoSubtitler.exe"):
-        shutil.copy2("dist/AutoSubtitler.exe", release_dir)
+    exe_path = find_executable()
+    if exe_path:
+        shutil.copy2(exe_path, release_dir)
+        print(f"📁 Copied executable: {exe_path}")
+    else:
+        print("❌ Could not find executable to copy")
 
     # Copy the installer if it exists
-    if os.path.exists("installer/AutoSubtitler_Setup.exe"):
-        shutil.copy2("installer/AutoSubtitler_Setup.exe", release_dir)
+    installer_path = "installer/AutoSubtitler_Setup.exe"
+    if os.path.exists(installer_path):
+        shutil.copy2(installer_path, release_dir)
+        print("📁 Copied installer")
+    else:
+        # Check if installer is in Output directory (default Inno Setup location)
+        alternative_installer_path = "Output/AutoSubtitler_Setup.exe"
+        if os.path.exists(alternative_installer_path):
+            shutil.copy2(alternative_installer_path, release_dir)
+            print("📁 Found installer in Output/ directory")
+
+    # For single-file builds, we don't need separate DLLs
+    # But include them anyway for users who might need them
+    python_dir = os.path.dirname(sys.executable)
+    for dll in ['python39.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll']:
+        dll_path = os.path.join(python_dir, dll)
+        if os.path.exists(dll_path):
+            shutil.copy2(dll_path, release_dir)
+            print(f"📁 Copied DLL: {dll}")
 
     # Create a README for the release
     readme_content = """
@@ -279,30 +584,36 @@ A GPU-accelerated video subtitle generator with smart caching and speed optimiza
 
 - Windows 10 or later
 - 4GB RAM minimum (8GB recommended)
+- Microsoft Visual C++ Redistributable 2019
 - NVIDIA GPU with CUDA support (optional but recommended)
 
-## Installation
+## Installation Options
 
-1. Download the installer (`AutoSubtitler_Setup.exe`)
+### Option 1: Installer (Recommended)
+1. Download `AutoSubtitler_Setup.exe`
 2. Run the installer and follow the instructions
 3. Launch Auto Subtitler from the Start menu or desktop shortcut
 
-## Portable Version
-
-If you prefer a portable version, download `AutoSubtitler.exe` and run it directly.
+### Option 2: Portable Version
+1. Download `AutoSubtitler.exe`
+2. Create a new folder and place the executable there
+3. Double-click to run (first run may take longer as it extracts files)
 
 ## Notes
 
 - The first run may take longer as it downloads AI models
 - Internet connection is required for translation features
 - For best performance, use a GPU with CUDA support
+- The portable version is a single file that contains everything needed
 
 ## Troubleshooting
 
 If you encounter issues:
 1. Make sure you have the latest Windows updates
-2. Install the latest NVIDIA drivers if using a GPU
-3. Check that your antivirus isn't blocking the application
+2. Install the latest Microsoft Visual C++ Redistributable
+3. Install the latest NVIDIA drivers if using a GPU
+4. Check that your antivirus isn't blocking the application
+5. Try running as administrator if you get permission errors
 """
 
     with open(os.path.join(release_dir, "README.md"), "w") as f:
@@ -372,12 +683,32 @@ pause
     print("💡 Note: You need to install GitHub CLI (gh) and be authenticated")
 
 
+def manual_installer_creation():
+    """Provide manual instructions for creating installer"""
+    print("🔧 Manual Installer Creation Instructions")
+    print("=" * 50)
+    print("Since automatic installer creation failed, here's how to do it manually:")
+    print()
+    print("1. Open Inno Setup Compiler (should be in your Start Menu)")
+    print("2. Click 'File' > 'Open' and select 'installer.iss'")
+    print("3. Click the 'Compile' button (green play button)")
+    print("4. The installer will be created in the 'installer' directory")
+    print()
+    print("Alternatively, run this command in Command Prompt:")
+    print(r'   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss')
+    print()
+    input("Press Enter to continue...")
+
+
 def main():
     print("🎬 Auto Subtitler - Enhanced Build Script")
     print("=" * 50)
 
     # Check dependencies
     check_dependencies()
+
+    # Check VC++ Redistributable
+    check_vc_redist()
 
     # Install PyInstaller
     install_pyinstaller()
@@ -391,9 +722,11 @@ def main():
         print("5. Prepare GitHub release files")
         print("6. Create GitHub release scripts")
         print("7. Full build process (executable + installer + GitHub prep)")
-        print("8. Exit")
+        print("8. Manual installer creation instructions")
+        print("9. Exit")
+        print("10. Optimized single file build (RECOMMENDED for large apps)")
 
-        choice = input("Enter your choice (1-8): ").strip()
+        choice = input("Enter your choice (1-10): ").strip()
 
         if choice == "1":
             # Quick directory build
@@ -401,10 +734,19 @@ def main():
                 "pyinstaller",
                 "--windowed",
                 "--name=AutoSubtitler",
+                "--hidden-import", "whisper.transcribe",
+                "--hidden-import", "whisper.tokenizer",
+                "--hidden-import", "whisper.utils",
+                "--hidden-import", "whisper.decoding",
+                "--hidden-import", "whisper.model",
+                "--hidden-import", "whisper.audio",
+                "--collect-submodules", "whisper",
+                "--collect-submodules", "torch",
                 "--clean",
                 "subtitler_gui.py"
             ]
             subprocess.run(cmd)
+            find_executable()  # Show where the executable was created
 
         elif choice == "2":
             build_onefile()
@@ -414,11 +756,24 @@ def main():
             build_executable()
 
         elif choice == "4":
-            if build_executable():
-                create_installer()
+            # Ask user which build to use for installer
+            print("Which executable do you want to use for the installer?")
+            print("a. Use existing executable (if available)")
+            print("b. Build optimized executable first (recommended)")
+            sub_choice = input("Choose (a/b): ").strip().lower()
+
+            if sub_choice == "b":
+                if build_onefile_optimized():
+                    if not create_installer():
+                        manual_installer_creation()
+                else:
+                    print("❌ Failed to build executable")
+            else:
+                if not create_installer():
+                    manual_installer_creation()
 
         elif choice == "5":
-            if os.path.exists("dist/AutoSubtitler.exe"):
+            if find_executable():
                 prepare_github_release()
             else:
                 print("❌ Please build the executable first")
@@ -427,14 +782,23 @@ def main():
             create_github_release_script()
 
         elif choice == "7":
-            # Full build process
-            if build_executable() and create_installer():
-                prepare_github_release()
-                create_github_release_script()
+            # Full build process with optimized build
+            if build_onefile_optimized():
+                if create_installer():
+                    prepare_github_release()
+                    create_github_release_script()
+                else:
+                    manual_installer_creation()
 
         elif choice == "8":
+            manual_installer_creation()
+
+        elif choice == "9":
             print("👋 Goodbye!")
             break
+
+        elif choice == "10":
+            build_onefile_optimized()
 
         else:
             print("❌ Invalid choice. Please try again.")
@@ -445,6 +809,7 @@ def main():
     print("   - For GitHub releases, install GitHub CLI (gh)")
     print("   - Sign up for a GitHub account if you don't have one")
     print("   - Consider code signing for better trust with users")
+    print("   - The single-file build is recommended as it's truly standalone")
 
 
 if __name__ == "__main__":
